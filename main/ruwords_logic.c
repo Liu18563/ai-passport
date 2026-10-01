@@ -218,3 +218,22 @@ const char *ruw_gender_hint(const char *ru, uint8_t gender) {
     if (c == Y) return "以-й结尾，通常阳性";
     return "以辅音结尾，通常阳性";
 }
+
+// ---------------------------------------------------------------- v2→v3 迁移
+
+uint8_t ruw_migrate_stage(uint8_t old_level, uint8_t old_wrong) {
+    if (old_wrong > 0) return RUW_STAGE_WRONG2;
+    if (old_level > 0) return RUW_STAGE_DONE;
+    return RUW_STAGE_NEW;
+}
+
+void ruw_migrate_v2(uint8_t *out_stage, uint16_t new_count,
+                    const uint16_t *map, uint16_t old_count,
+                    const uint8_t *old_level, const uint8_t *old_wrong) {
+    for (uint16_t i = 0; i < new_count; i++) out_stage[i] = RUW_STAGE_NEW;
+    for (uint16_t i = 0; i < old_count; i++) {
+        uint16_t ni = map[i];
+        if (ni < new_count)
+            out_stage[ni] = ruw_migrate_stage(old_level[i], old_wrong[i]);
+    }
+}

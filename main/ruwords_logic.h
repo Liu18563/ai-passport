@@ -77,3 +77,13 @@ void ruw_question_make(ruw_question_t *q, uint16_t target, uint16_t count,
 // 阴阳中性:根据词尾与实际性别生成「判断提示」。
 // gender 取 RUW_GENDER_*;pl 返回「只有复数形式」。
 const char *ruw_gender_hint(const char *ru, uint8_t gender);
+
+// v2→v3 迁移。旧 Leitner 单状态:wrong>0→WRONG2;level>0→DONE;其余 NEW。
+uint8_t ruw_migrate_stage(uint8_t old_level, uint8_t old_wrong);
+
+// 按「旧下标→新下标」映射表把旧存档迁移到新状态数组。
+// 映射表按俄语原文构建(下标已变,不能直接按下标复制);
+// 新数组先全部置 NEW,未匹配到的新词保持 NEW。
+void ruw_migrate_v2(uint8_t *out_stage, uint16_t new_count,
+                    const uint16_t *map, uint16_t old_count,
+                    const uint8_t *old_level, const uint8_t *old_wrong);

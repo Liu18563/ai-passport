@@ -4,6 +4,7 @@ idf_component_register(
          "ruwords_logic.c"
          "ruwords_adpcm.c"
          "ruwords_data.c"
+         "ruwords_legacy_map.c"
          "../assets/fonts/ruw_font_20.c"
          "../assets/fonts/ruw_font_28.c"
          "../assets/fonts/ruw_font_36.c"

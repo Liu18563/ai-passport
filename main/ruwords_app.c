@@ -146,22 +146,29 @@ typedef struct {
     uint16_t gender_seen[RUW_WORD_COUNT];
 } saved_progress_t;
 
-// v2(旧 Leitner 存档):保留定义,供「存储迁移」块做 v2→v3 迁移。
+// v2(旧 Leitner 存档,301 词):保留定义,供 v2→v3 迁移。
+// 数组长度必须用旧词数 301,不能用当前 RUW_WORD_COUNT,否则 blob 大小对不上。
+#define RUW_LEGACY_COUNT 301
 typedef struct {
     uint16_t version;
     uint16_t count;
     uint16_t round;
     uint8_t volume_level;
     uint8_t filter;
-    uint8_t level[RUW_WORD_COUNT];
-    uint8_t wrong[RUW_WORD_COUNT];
-    uint16_t due[RUW_WORD_COUNT];
+    uint8_t level[RUW_LEGACY_COUNT];
+    uint8_t wrong[RUW_LEGACY_COUNT];
+    uint16_t due[RUW_LEGACY_COUNT];
 } saved_progress_v2_t;
 
 static union {
     saved_progress_t v3;
     saved_progress_v2_t v2;
 } s_blob;  // 静态:避免占 input 任务栈
+
+// 外部映射表(ruwords_legacy_map.c):旧 v2 下标 → 新 v3 下标,按原文构建。
+extern const uint16_t RUW_LEGACY_MAP[RUW_LEGACY_COUNT];
+
+static void progress_save(void);  // 迁移后立即落盘 v3
 
 static void progress_load(void) {
     ruw_progress_reset(&s_progress);
@@ -173,9 +180,9 @@ static void progress_load(void) {
     nvs_close(h);
     if (err != ESP_OK) return;
 
-    // v2→v3 按原文迁移在「存储迁移」块实现;本块只认 v3,旧格式从头开始。
     if (len == sizeof(saved_progress_t) && s_blob.v3.version == PROG_VERSION
         && s_blob.v3.count == RUW_WORD_COUNT) {
+        // 当前 v3 存档。
         s_progress.level = s_blob.v3.level;
         s_gender_progress.level = s_blob.v3.gender_level;
         memcpy(s_stage, s_blob.v3.stage, sizeof(s_stage));
@@ -184,13 +191,24 @@ static void progress_load(void) {
         memcpy(s_gender_seen, s_blob.v3.gender_seen, sizeof(s_gender_seen));
         if (s_blob.v3.volume_level < VOLUME_LEVELS) s_volume_level = s_blob.v3.volume_level;
         if (s_blob.v3.filter <= RUW_CATEGORY_COUNT) s_filter = s_blob.v3.filter;
+        for (int i = 0; i < RUW_WORD_COUNT; i++) {
+            if (s_stage[i] > RUW_STAGE_WRONG1) s_stage[i] = RUW_STAGE_NEW;
+            if (s_gender_stage[i] > RUW_STAGE_WRONG1) s_gender_stage[i] = RUW_STAGE_NEW;
+        }
+    } else if (len == sizeof(saved_progress_v2_t) && s_blob.v2.version == 2
+               && s_blob.v2.count == RUW_LEGACY_COUNT) {
+        // v2 旧存档:按俄语原文迁移词义状态(性别无,保持 NEW),随后落盘为 v3。
+        ESP_LOGI(TAG, "检测到 v2 存档,按原文迁移到 v3");
+        ruw_migrate_v2(s_stage, RUW_WORD_COUNT, RUW_LEGACY_MAP, RUW_LEGACY_COUNT,
+                       s_blob.v2.level, s_blob.v2.wrong);
+        if (s_blob.v2.volume_level < VOLUME_LEVELS) s_volume_level = s_blob.v2.volume_level;
+        if (s_blob.v2.filter <= RUW_CATEGORY_COUNT) s_filter = s_blob.v2.filter;
+        progress_save();
     } else {
-        ESP_LOGI(TAG, "进度格式不匹配,从头开始");
+        // 未知版本/大小:从头开始,不崩溃。
+        ESP_LOGI(TAG, "进度格式不匹配(version=%u,len=%u),从头开始",
+                 s_blob.v3.version, (unsigned)len);
         return;
-    }
-    for (int i = 0; i < RUW_WORD_COUNT; i++) {
-        if (s_stage[i] > RUW_STAGE_WRONG1) s_stage[i] = RUW_STAGE_NEW;
-        if (s_gender_stage[i] > RUW_STAGE_WRONG1) s_gender_stage[i] = RUW_STAGE_NEW;
     }
 }
 
