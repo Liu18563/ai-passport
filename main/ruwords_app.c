@@ -1,13 +1,14 @@
 // main/ruwords_app.c —— 俄语单词斩:看俄语(重音标红+拉丁转写)、听发音、四选一中文释义。
 //
-// 页面:首页菜单 → 分类选择 / 答题(作答后显示词性与完整释义)→ 本轮完成 → 首页。
+// 页面(两级菜单):分类页(开机首页)→ 模式页(只学这一类)→ 答题 → 本关完成 → 模式页。
 // 按键:
-//   首页      上/下 = 移动菜单;确定 = 执行(开始学习 / 听音选义 / 选分类 / 错题本 / 切换音量)
-//   分类      上/下 = 移动;确定 = 选定并回首页;确定 长按 = 不改回首页
-//   答题      上/下 = 移动选项;确定 = 提交;上 长按 = 重听;确定 长按 = 回首页
+//   分类页    上/下 = 移动(循环);确定 = 选定分类进模式页;确定 长按 = 设置页
+//   模式页    上/下 = 移动(循环);确定 = 开始该模式;确定 长按 = 回分类页
+//   设置页    上/下 = 移动;确定 = 执行(音量/重置);确定 长按 = 回分类页
+//   答题      上/下 = 移动选项;确定 = 提交;上 长按 = 重听;确定 长按 = 回模式页
 //             (听音模式:答题前只显示大"听"区,作答后才揭晓俄语/转写/释义)
-//   作答后    上/下 = 重听;确定 = 下一题;确定 长按 = 回首页
-//   本轮完成  确定 = 回首页
+//   作答后    上/下 = 重听;确定 = 下一题;确定 长按 = 回模式页
+//   本轮完成  确定 = 回模式页
 // 任意键在息屏时只负责唤醒,不触发操作。
 //
 // 线程:按键回调只入队;input 任务持 LVGL 锁改界面并写 NVS;audio 任务解码播放。
@@ -62,13 +63,9 @@ static const uint8_t VOLUME_STEPS[] = { 60, 70, 80, 90, 100 };
 #define VOLUME_DEFAULT (VOLUME_LEVELS - 1)
 
 // ---- 状态 ----
-typedef enum { PAGE_HOME, PAGE_CATEGORY, PAGE_QUIZ, PAGE_DONE, PAGE_SETTINGS } page_t;
+typedef enum { PAGE_HOME, PAGE_MODES, PAGE_QUIZ, PAGE_DONE, PAGE_SETTINGS } page_t;
 typedef enum {
-    MENU_START, MENU_LISTEN, MENU_GENDER, MENU_WRONG,
-    MENU_COUNT,
-} menu_t;
-typedef enum {
-    SET_CATEGORY, SET_VOLUME, SET_RESET, SET_COUNT,
+    SET_VOLUME, SET_RESET, SET_COUNT,
 } settings_t;
 typedef enum { MODE_STUDY, MODE_WRONG, MODE_LISTEN, MODE_GENDER } study_mode_t;
 
@@ -80,6 +77,7 @@ typedef struct {
 static uint8_t s_stage[RUW_WORD_COUNT];       // 词义闯关状态,见 RUW_STAGE_*
 static uint16_t s_last_seen[RUW_WORD_COUNT];  // 最后一次考到的关数
 static uint8_t s_category[RUW_WORD_COUNT];
+static uint8_t s_gender[RUW_WORD_COUNT];      // 每词性别 RUW_GENDER_*,供纯统计函数用
 static uint8_t s_eligible[RUW_WORD_COUNT];
 static ruw_progress_t s_progress = {
     .count = RUW_WORD_COUNT, .level = 0,
@@ -101,10 +99,12 @@ static uint32_t s_seed;
 static study_mode_t s_mode;
 
 static page_t s_page;
-static uint8_t s_menu;
 static uint8_t s_settings_cursor;
 static uint8_t s_reset_confirm;  // 重置进度第一次确定后置 1
-static uint8_t s_cat_cursor;
+static uint8_t s_cat_cursor;     // 分类页光标
+static uint8_t s_mode_cursor;    // 模式页光标
+static uint8_t s_mode_items[4];  // 模式页实际显示的模式(本类无名词时阴阳中性不出现)
+static uint8_t s_mode_item_count;
 static uint8_t s_selected;
 static bool s_answered;
 static bool s_audio_ok;
@@ -202,7 +202,8 @@ static void progress_load(void) {
         ruw_migrate_v2(s_stage, RUW_WORD_COUNT, RUW_LEGACY_MAP, RUW_LEGACY_COUNT,
                        s_blob.v2.level, s_blob.v2.wrong);
         if (s_blob.v2.volume_level < VOLUME_LEVELS) s_volume_level = s_blob.v2.volume_level;
-        if (s_blob.v2.filter <= RUW_CATEGORY_COUNT) s_filter = s_blob.v2.filter;
+        // v2 分类编号与 v3 顺序不同,旧 filter 指错分类,迁移后一律从「全部」开始。
+        s_filter = 0;
         progress_save();
     } else {
         // 未知版本/大小:从头开始,不崩溃。
@@ -365,70 +366,116 @@ static const char *filter_name(void) {
     return s_filter == 0 ? "全部" : RUW_CATEGORIES[s_filter - 1];
 }
 
-// ---------------------------------------------------------------- 首页
+// ---------------------------------------------------------------- 一级:分类页(开机首页)
 
-static void home_menu_text(void) {
-    lv_label_set_text_fmt(s_row_labels[MENU_START], "闯关学习 · %s", filter_name());
-    lv_label_set_text_fmt(s_row_labels[MENU_LISTEN], "听音选义 · %s", filter_name());
-    lv_label_set_text_fmt(s_row_labels[MENU_GENDER], "阴阳中性 · 已掌握 %u",
-                          ruw_count_mastered(&s_gender_progress));
-    lv_label_set_text_fmt(s_row_labels[MENU_WRONG], "错题本 · %u 个",
-                          ruw_count_wrong(&s_progress));
+#define CAT_VISIBLE 5
+
+static void category_refresh(void) {
+    // 一屏 5 行,光标超出时整体滚动。
+    uint8_t total = RUW_CATEGORY_COUNT + 1;
+    uint8_t first = s_cat_cursor < CAT_VISIBLE ? 0 : s_cat_cursor - CAT_VISIBLE + 1;
+    for (uint8_t r = 0; r < CAT_VISIBLE; r++) {
+        uint8_t item = first + r;
+        if (item >= total) {
+            lv_obj_add_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_remove_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+        const char *name = item == 0 ? "全部" : RUW_CATEGORIES[item - 1];
+        ruw_category_stats_t st;
+        ruw_category_stats(&st, item, RUW_WORD_COUNT, s_category, s_gender,
+                           s_stage, s_gender_stage);
+        lv_label_set_text_fmt(s_row_labels[r], "%s  %u/%u", name, st.mastered, st.words);
+    }
+    list_select(s_cat_cursor - first);
 }
 
 static void show_home(void) {
     lv_obj_t *scr = page_begin(PAGE_HOME);
 
+    // 顶部:红色竖条 + 标题(保持原位置),右上角电量。
     box(scr, 30, 14, 6, 22, COL_ACCENT, 2);
     lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, "俄语单词斩");
     lv_obj_set_pos(title, 42, 10);
 
-    uint16_t mastered = ruw_count_mastered(&s_progress);
+    // 标题下小字:已掌握 X/1300 · 错词 Y。
+    ruw_category_stats_t all;
+    ruw_category_stats(&all, 0, RUW_WORD_COUNT, s_category, s_gender,
+                       s_stage, s_gender_stage);
+    lv_obj_t *sub = label(scr, &ruw_font_20, COL_MUTED, "");
+    lv_label_set_text_fmt(sub, "已掌握 %u/%d · 错词 %u",
+                          all.mastered, RUW_WORD_COUNT, all.wrong);
+    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 40);
 
-    // 进度环(直径约118),环心大号数字=已掌握数,数字下方小字"/ 总词数"。
-    lv_obj_t *arc = lv_arc_create(scr);
-    lv_obj_set_size(arc, 118, 118);
-    lv_obj_set_pos(arc, 61, 30);
-    lv_arc_set_bg_angles(arc, 0, 360);
-    lv_arc_set_range(arc, 0, RUW_WORD_COUNT);
-    lv_arc_set_value(arc, mastered);
-    lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(arc, 6, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, 6, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(arc, lv_color_hex(COL_CARD), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
-    // 进度环不需要旋钮:把 KNOB 部分设为透明。
-    lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(arc, 0, LV_PART_KNOB);
+    // 19 项分类,首行 y=72、行距 44、行高 38,一屏 5 行。
+    for (int r = 0; r < CAT_VISIBLE; r++) list_row(scr, 72 + r * 44, 38, "", true);
+    s_cat_cursor = s_filter;  // 开机停在上次选过的分类
+    category_refresh();
 
-    lv_obj_t *num = label(scr, &ruw_font_48, COL_INK, "");
-    lv_label_set_text_fmt(num, "%u", mastered);
-    lv_obj_align_to(num, arc, LV_ALIGN_CENTER, 0, -16);
-    lv_obj_t *total = label(scr, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(total, "/%d", RUW_WORD_COUNT);
-    lv_obj_align_to(total, arc, LV_ALIGN_CENTER, 0, 26);
-
-    // 环下一行:第 N 关 · 新词 x · 错词 y。
-    lv_obj_t *stats = label(scr, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(stats, "第 %u 关 · 新词 %u · 错词 %u",
-                          s_progress.level + 1, ruw_count_new(&s_progress),
-                          ruw_count_wrong(&s_progress));
-    lv_obj_align(stats, LV_ALIGN_TOP_MID, 0, 150);
-
-    // 菜单 4 行:行距 30,行高 28,末行底边 294。
-    for (int i = 0; i < MENU_COUNT; i++) list_row(scr, 176 + i * 30, 28, "", true);
-    home_menu_text();
-    list_select(s_menu);
-
-    // 底部小字:长按确定进入设置。
     lv_obj_t *hint = label(scr, &ruw_font_20, COL_MUTED, "长按确定：设置");
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 298);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 292);
+}
+
+// ---------------------------------------------------------------- 二级:模式页(只学当前分类)
+
+static void modes_rows_text(void) {
+    ruw_category_stats_t st;
+    ruw_category_stats(&st, s_filter, RUW_WORD_COUNT, s_category, s_gender,
+                       s_stage, s_gender_stage);
+    for (uint8_t i = 0; i < s_mode_item_count; i++) {
+        switch (s_mode_items[i]) {
+        case MODE_STUDY:
+            lv_label_set_text(s_row_labels[i], "闯关学习");
+            break;
+        case MODE_LISTEN:
+            lv_label_set_text(s_row_labels[i], "听音选义");
+            break;
+        case MODE_GENDER:
+            lv_label_set_text_fmt(s_row_labels[i], "阴阳中性 已掌握%u/%u",
+                                  st.nouns_mastered, st.nouns);
+            break;
+        case MODE_WRONG:
+            lv_label_set_text_fmt(s_row_labels[i], "错题本 · %u 个", st.wrong);
+            break;
+        }
+    }
+}
+
+static void show_modes(void) {
+    ruw_category_stats_t st;
+    ruw_category_stats(&st, s_filter, RUW_WORD_COUNT, s_category, s_gender,
+                       s_stage, s_gender_stage);
+
+    lv_obj_t *scr = page_begin(PAGE_MODES);
+    lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, filter_name());
+    lv_obj_set_pos(title, 30, 10);
+
+    // 信息卡:两行小字。
+    lv_obj_t *card = box(scr, 16, 40, 208, 76, COL_CARD, 14);
+    lv_obj_t *l1 = label(card, &ruw_font_20, COL_INK, "");
+    lv_label_set_text_fmt(l1, "已掌握 %u/%u", st.mastered, st.words);
+    lv_obj_set_pos(l1, 12, 12);
+    lv_obj_t *l2 = label(card, &ruw_font_20, COL_MUTED, "");
+    lv_label_set_text_fmt(l2, "新词 %u · 错词 %u", st.fresh, st.wrong);
+    lv_obj_set_pos(l2, 12, 42);
+
+    // 动态菜单项:本类无名词时不显示阴阳中性。
+    s_mode_item_count = 0;
+    s_mode_items[s_mode_item_count++] = MODE_STUDY;
+    s_mode_items[s_mode_item_count++] = MODE_LISTEN;
+    if (st.nouns > 0) s_mode_items[s_mode_item_count++] = MODE_GENDER;
+    s_mode_items[s_mode_item_count++] = MODE_WRONG;
+    s_mode_cursor = 0;
+
+    for (uint8_t i = 0; i < s_mode_item_count; i++)
+        list_row(scr, 128 + i * 42, 36, "", true);
+    modes_rows_text();
+    list_select(s_mode_cursor);
 }
 
 // ---------------------------------------------------------------- 设置页
 
 static void settings_text(void) {
-    lv_label_set_text_fmt(s_row_labels[SET_CATEGORY], "选择分类：%s", filter_name());
     static const char *const BARS[VOLUME_LEVELS] = {
         "●○○○○", "●●○○○", "●●●○○", "●●●●○", "●●●●●",
     };
@@ -452,50 +499,12 @@ static void show_settings(void) {
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 250);
 }
 
-// 重置全部进度(词义与性别),回到初始状态并重绘首页。
+// 重置全部进度(词义与性别),回到初始状态并重绘分类页。
 static void reset_progress(void) {
     ruw_progress_reset(&s_progress);
     ruw_progress_reset(&s_gender_progress);
     progress_save();
     show_home();
-}
-
-// ---------------------------------------------------------------- 分类
-
-#define CAT_VISIBLE 6
-
-static void category_refresh(void) {
-    // 一屏 6 行,光标超出时整体滚动。
-    uint8_t total = RUW_CATEGORY_COUNT + 1;
-    uint8_t first = s_cat_cursor < CAT_VISIBLE ? 0 : s_cat_cursor - CAT_VISIBLE + 1;
-    for (uint8_t r = 0; r < CAT_VISIBLE; r++) {
-        uint8_t item = first + r;
-        if (item >= total) {
-            lv_obj_add_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_remove_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
-        const char *name = item == 0 ? "全部" : RUW_CATEGORIES[item - 1];
-        uint16_t words = 0, learned = 0;
-        for (int i = 0; i < RUW_WORD_COUNT; i++) {
-            if (item == 0 || s_category[i] == item - 1) {
-                words++;
-                learned += s_stage[i] != RUW_STAGE_NEW;
-            }
-        }
-        lv_label_set_text_fmt(s_row_labels[r], "%s%s  %u/%u", item == s_filter ? "● " : "",
-                              name, learned, words);
-    }
-    list_select(s_cat_cursor - first);
-}
-
-static void show_category(void) {
-    lv_obj_t *scr = page_begin(PAGE_CATEGORY);
-    lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, "选择分类");
-    lv_obj_set_pos(title, 30, 10);
-    for (int r = 0; r < CAT_VISIBLE; r++) list_row(scr, 44 + r * 42, 36, "", true);
-    s_cat_cursor = s_filter;
-    category_refresh();
 }
 
 // ---------------------------------------------------------------- 答题
@@ -720,15 +729,16 @@ static void show_done(void) {
 
 static bool start_session(study_mode_t mode) {
     for (int i = 0; i < RUW_WORD_COUNT; i++) {
+        bool in_cat = (s_filter == 0 || s_category[i] == s_filter - 1);
         if (mode == MODE_WRONG) {
-            s_eligible[i] = s_stage[i] == RUW_STAGE_WRONG1
-                         || s_stage[i] == RUW_STAGE_WRONG2;
+            // 错题本按分类:本类 + 词义错词。
+            s_eligible[i] = in_cat && (s_stage[i] == RUW_STAGE_WRONG1
+                                    || s_stage[i] == RUW_STAGE_WRONG2);
         } else if (mode == MODE_GENDER) {
             // 只考名词(性别非空),并按分类筛选。
-            s_eligible[i] = RUW_WORDS[i].gender != RUW_GENDER_NONE
-                         && (s_filter == 0 || s_category[i] == s_filter - 1);
+            s_eligible[i] = in_cat && RUW_WORDS[i].gender != RUW_GENDER_NONE;
         } else {
-            s_eligible[i] = s_filter == 0 || s_category[i] == s_filter - 1;
+            s_eligible[i] = in_cat;
         }
     }
     ruw_progress_t *prog = mode == MODE_GENDER ? &s_gender_progress : &s_progress;
@@ -741,42 +751,25 @@ static bool start_session(study_mode_t mode) {
 // ---------------------------------------------------------------- 输入
 
 static void home_input(const input_event_t *in) {
-    // 长按确定进入设置页。
+    // 长按确定进设置页。
     if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
         show_settings();
         return;
     }
     if (in->ev != BSP_BTN_CLICK) return;
+    uint8_t total = RUW_CATEGORY_COUNT + 1;
     if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-        s_menu = (uint8_t)((s_menu + (in->btn == BSP_BTN_UP ? MENU_COUNT - 1 : 1)) % MENU_COUNT);
-        list_select(s_menu);
+        s_cat_cursor = (uint8_t)((s_cat_cursor + (in->btn == BSP_BTN_UP ? total - 1 : 1)) % total);
+        category_refresh();
         return;
     }
-    switch (s_menu) {
-    case MENU_START:
-        if (!start_session(MODE_STUDY)) {
-            lv_label_set_text(s_row_labels[MENU_START], "全部掌握 · 已通关");
-        }
-        break;
-    case MENU_LISTEN:
-        if (!start_session(MODE_LISTEN)) {
-            lv_label_set_text(s_row_labels[MENU_LISTEN], "全部掌握 · 已通关");
-        }
-        break;
-    case MENU_GENDER:
-        if (!start_session(MODE_GENDER)) {
-            lv_label_set_text(s_row_labels[MENU_GENDER], "阴阳中性已通关");
-        }
-        break;
-    case MENU_WRONG:
-        if (!start_session(MODE_WRONG)) {
-            lv_label_set_text(s_row_labels[MENU_WRONG], "错题本是空的");
-        }
-        break;
-    }
+    // 确定:选中当前分类,存盘,进二级模式页。
+    s_filter = s_cat_cursor;
+    progress_save();
+    show_modes();
 }
 
-// 设置页输入:上下移动;确定执行;长按确定返回首页。
+// 设置页输入:上下移动;确定执行;长按确定回分类页。
 static void settings_input(const input_event_t *in) {
     if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
         show_home();
@@ -792,9 +785,6 @@ static void settings_input(const input_event_t *in) {
         return;
     }
     switch (s_settings_cursor) {
-    case SET_CATEGORY:
-        show_category();  // 分类页返回时回首页
-        break;
     case SET_VOLUME:
         s_volume_level = (uint8_t)((s_volume_level + 1) % VOLUME_LEVELS);
         apply_volume();
@@ -814,26 +804,35 @@ static void settings_input(const input_event_t *in) {
     }
 }
 
-static void category_input(const input_event_t *in) {
-    uint8_t total = RUW_CATEGORY_COUNT + 1;
+// 二级模式页输入:上下移动(按动态菜单项循环);确定开始;长按确定回分类页。
+static void modes_input(const input_event_t *in) {
     if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
         show_home();
-    } else if (in->ev != BSP_BTN_CLICK) {
         return;
-    } else if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
-        s_cat_cursor = (uint8_t)((s_cat_cursor + (in->btn == BSP_BTN_UP ? total - 1 : 1)) % total);
-        category_refresh();
-    } else {
-        s_filter = s_cat_cursor;
-        progress_save();
-        s_menu = MENU_START;
-        show_home();
+    }
+    if (in->ev != BSP_BTN_CLICK) return;
+    if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
+        s_mode_cursor = (uint8_t)((s_mode_cursor +
+            (in->btn == BSP_BTN_UP ? s_mode_item_count - 1 : 1)) % s_mode_item_count);
+        list_select(s_mode_cursor);
+        return;
+    }
+    study_mode_t mode = s_mode_items[s_mode_cursor];
+    if (!start_session(mode)) {
+        // 范围内没有可学内容:在对应那一行上提示,不跳页。
+        const char *hint;
+        switch (mode) {
+        case MODE_GENDER: hint = "本类名词已全部掌握"; break;
+        case MODE_WRONG:  hint = "本类没有错题"; break;
+        default:          hint = "本类已全部掌握"; break;
+        }
+        lv_label_set_text(s_row_labels[s_mode_cursor], hint);
     }
 }
 
 static void quiz_input(const input_event_t *in) {
     if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
-        show_home();  // 已作答的词进度已保存;本轮不计入轮次
+        show_modes();  // 已作答的词进度已保存;本轮不计入轮次,回二级模式页
     } else if (in->btn == BSP_BTN_UP && in->ev == BSP_BTN_LONG) {
         play_word(current_word());
     } else if (in->ev != BSP_BTN_CLICK) {
@@ -859,11 +858,11 @@ static void quiz_input(const input_event_t *in) {
 static void handle_input(const input_event_t *in) {
     switch (s_page) {
     case PAGE_HOME:     home_input(in); break;
+    case PAGE_MODES:    modes_input(in); break;
     case PAGE_SETTINGS: settings_input(in); break;
-    case PAGE_CATEGORY: category_input(in); break;
     case PAGE_QUIZ:     quiz_input(in); break;
     case PAGE_DONE:
-        if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_CLICK) show_home();
+        if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_CLICK) show_modes();
         break;
     }
 }
@@ -920,7 +919,10 @@ esp_err_t ruwords_app_start(void) {
     }
     if (err != ESP_OK) ESP_LOGE(TAG, "NVS 初始化失败,进度不会保存: %s", esp_err_to_name(err));
 
-    for (int i = 0; i < RUW_WORD_COUNT; i++) s_category[i] = RUW_WORDS[i].category;
+    for (int i = 0; i < RUW_WORD_COUNT; i++) {
+        s_category[i] = RUW_WORDS[i].category;
+        s_gender[i] = RUW_WORDS[i].gender;
+    }
     s_seed = esp_random();
     progress_load();
 

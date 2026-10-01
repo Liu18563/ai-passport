@@ -47,6 +47,22 @@ typedef struct {
     uint8_t answer;              // 正确选项位置 0..3
 } ruw_question_t;
 
+// 一个分类的统计(供分类页/模式页显示)。
+typedef struct {
+    uint16_t words;           // 本类词数
+    uint16_t mastered;        // 词义 DONE 数
+    uint16_t fresh;           // 词义 NEW 数
+    uint16_t wrong;           // 词义 WRONG1/WRONG2 数
+    uint16_t nouns;           // 本类名词数
+    uint16_t nouns_mastered;  // 性别 DONE 数
+} ruw_category_stats_t;
+
+// category_filter:0 = 全部;n = 第 n-1 个分类。
+// gender 取 RUW_GENDER_*(非名词为 RUW_GENDER_NONE);gender_stage 为性别闯关状态。
+void ruw_category_stats(ruw_category_stats_t *out, uint8_t category_filter,
+                        uint16_t count, const uint8_t *category, const uint8_t *gender,
+                        const uint8_t *stage, const uint8_t *gender_stage);
+
 void ruw_progress_reset(ruw_progress_t *p);
 
 // 状态转移:返回作答后的新状态。requeued(重排题)时原样返回,不改状态。

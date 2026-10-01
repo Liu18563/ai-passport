@@ -295,6 +295,49 @@ static void test_adpcm_decode(void) {
     assert(st.index == 16);
 }
 
+// 分类统计:全部=各分类之和;无名词类 nouns==0;错词只算 WRONG1/WRONG2。
+static void test_category_stats(void) {
+    enum { C = 24 };
+    static uint8_t cat[C], gdr[C], stg[C], gstg[C];
+    for (int i = 0; i < C; i++) {
+        cat[i] = (uint8_t)(i / 8);  // 0..7 类0,8..15 类1,16..23 类2
+        gdr[i] = RUW_GENDER_NONE;
+        stg[i] = RUW_STAGE_NEW;
+        gstg[i] = RUW_STAGE_NEW;
+    }
+    // 名词:0..5(类0)、8..13(类1);类2 无名词。
+    for (int i = 0; i < 6; i++) gdr[i] = RUW_GENDER_M;
+    for (int i = 8; i < 14; i++) gdr[i] = RUW_GENDER_F;
+    // 词义状态。
+    stg[0] = stg[1] = RUW_STAGE_DONE;
+    stg[2] = RUW_STAGE_WRONG1; stg[3] = RUW_STAGE_WRONG2;
+    stg[8] = RUW_STAGE_DONE; stg[9] = RUW_STAGE_WRONG2;
+    // 性别已掌握:名词 0、8、10。
+    gstg[0] = gstg[8] = gstg[10] = RUW_STAGE_DONE;
+
+    ruw_category_stats_t all, c0, c1, c2;
+    ruw_category_stats(&all, 0, C, cat, gdr, stg, gstg);
+    ruw_category_stats(&c0, 1, C, cat, gdr, stg, gstg);
+    ruw_category_stats(&c1, 2, C, cat, gdr, stg, gstg);
+    ruw_category_stats(&c2, 3, C, cat, gdr, stg, gstg);
+
+    // 类2 没有名词。
+    assert(c2.words == 8 && c2.nouns == 0 && c2.nouns_mastered == 0);
+    // 错词只统计 WRONG1/WRONG2,DONE/NEW 不计。
+    assert(c0.words == 8 && c0.mastered == 2 && c0.wrong == 2 && c0.fresh == 4);
+    assert(c0.nouns == 6 && c0.nouns_mastered == 1);
+    assert(c1.words == 8 && c1.mastered == 1 && c1.wrong == 1 && c1.fresh == 6);
+    assert(c1.nouns == 6 && c1.nouns_mastered == 2);
+    assert(c2.mastered == 0 && c2.wrong == 0 && c2.fresh == 8);
+    // 「全部」等于各分类之和。
+    assert(all.words == c0.words + c1.words + c2.words);
+    assert(all.mastered == c0.mastered + c1.mastered + c2.mastered);
+    assert(all.fresh == c0.fresh + c1.fresh + c2.fresh);
+    assert(all.wrong == c0.wrong + c1.wrong + c2.wrong);
+    assert(all.nouns == c0.nouns + c1.nouns + c2.nouns);
+    assert(all.nouns_mastered == c0.nouns_mastered + c1.nouns_mastered + c2.nouns_mastered);
+}
+
 int main(void) {
     test_stage_transitions();
     test_requeued_keeps_stage();
@@ -314,5 +357,6 @@ int main(void) {
     test_migrate_v2();
     test_question_large_scale();
     test_adpcm_decode();
+    test_category_stats();
     return 0;
 }

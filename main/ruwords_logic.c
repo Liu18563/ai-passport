@@ -48,6 +48,26 @@ uint16_t ruw_count_wrong(const ruw_progress_t *p) {
     return n;
 }
 
+void ruw_category_stats(ruw_category_stats_t *out, uint8_t category_filter,
+                        uint16_t count, const uint8_t *category, const uint8_t *gender,
+                        const uint8_t *stage, const uint8_t *gender_stage) {
+    memset(out, 0, sizeof(*out));
+    for (uint16_t i = 0; i < count; i++) {
+        if (category_filter != 0 && category[i] != category_filter - 1) continue;
+        out->words++;
+        switch (stage[i]) {
+        case RUW_STAGE_DONE: out->mastered++; break;
+        case RUW_STAGE_NEW:  out->fresh++; break;
+        case RUW_STAGE_WRONG1:
+        case RUW_STAGE_WRONG2: out->wrong++; break;
+        }
+        if (gender[i] != RUW_GENDER_NONE) {
+            out->nouns++;
+            if (gender_stage[i] == RUW_STAGE_DONE) out->nouns_mastered++;
+        }
+    }
+}
+
 static bool in_queue(const ruw_session_t *s, uint16_t w) {
     for (uint8_t i = 0; i < s->len; i++)
         if (s->queue[i] == w) return true;
