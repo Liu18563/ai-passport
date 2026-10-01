@@ -9,6 +9,7 @@ idf_component_register(
          "../assets/fonts/ruw_font_28.c"
          "../assets/fonts/ruw_font_36.c"
          "../assets/fonts/ruw_font_48.c"
+         "../assets/images/ruw_logo.c"
     INCLUDE_DIRS "."
     EMBED_FILES "../assets/music/ruwords_voice.adpcm"
     REQUIRES bsp esp_timer esp_hw_support nvs_flash

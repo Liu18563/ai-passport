@@ -40,6 +40,7 @@ LV_FONT_DECLARE(ruw_font_20);
 LV_FONT_DECLARE(ruw_font_28);
 LV_FONT_DECLARE(ruw_font_36);
 LV_FONT_DECLARE(ruw_font_48);
+LV_IMAGE_DECLARE(ruw_logo);
 
 extern const uint8_t s_voice_start[] asm("_binary_ruwords_voice_adpcm_start");
 extern const uint8_t s_voice_end[] asm("_binary_ruwords_voice_adpcm_end");
@@ -458,7 +459,11 @@ static void continue_challenge(void) {
 
 static void show_home(void) {
     lv_obj_t *scr = page_begin(PAGE_HOME);
-    // Logo 96x96 位于 (72,22),由提交3 接入;标题在 y=122。
+    // 96x96 Logo 居中于 (72,22),标题在 y=122。
+    lv_obj_t *logo = lv_image_create(scr);
+    lv_image_set_src(logo, &ruw_logo);
+    lv_obj_set_pos(logo, 72, 22);
+
     lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, "俄语单词斩");
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 122);
     lv_obj_t *sub = label(scr, &ruw_font_20, COL_MUTED, "");

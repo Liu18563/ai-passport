@@ -48,5 +48,6 @@ Store reusable music and sound-effect sources in `music/`.
 | --- | --- |
 | `fonts/ruw_font_20.c` / `ruw_font_28.c` / `ruw_font_36.c` | Noto Sans SC (SIL OFL 1.1) converted with lv_font_conv 1.5.2, 4 bpp, uncompressed. 20px covers every character in `tools/ruwords/glyphs.txt`; 28/36px cover ASCII and Cyrillic only. Regenerate: `tools/ruwords/gen_fonts.sh <font path>` |
 | `music/ruwords_voice.adpcm` | Russian pronunciation for 301 words, synthesized with macOS `say -v Milena`, silence-trimmed with ffmpeg, resampled to 16 kHz mono and encoded as 4-bit IMA-ADPCM. Regenerate: `python3 tools/ruwords/gen_assets.py` |
+| `images/ruw_logo.c` | 96 × 96, RGB565, uncompressed, no alpha. Pixel-art ushanka (Russian fur hat) drawn as a 32×32 character matrix and 3×-scaled; original artwork, no political symbols. Regenerate: `python3 tools/ruwords/gen_logo.py` (also writes `tools/ruwords/logo_preview.png`) |
 
 Output of the macOS system voice is for personal study only and has not been cleared for public redistribution; switch to a clearly licensed TTS or human recordings before publishing.
