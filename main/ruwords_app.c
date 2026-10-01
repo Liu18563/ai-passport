@@ -190,7 +190,7 @@ static void progress_save(void);  // 迁移后立即落盘 v3
 static void sess_load(void);
 static void sess_save(void);
 static void show_category(void);
-static void show_modes(void);
+static void show_modes(bool resume_cursor);
 static void show_question(void);
 static bool start_session(study_mode_t mode);
 
@@ -537,14 +537,14 @@ static void modes_rows_text(void) {
             lv_label_set_text(s_row_labels[i], "听音选义");
             break;
         case MODE_GENDER:
-            lv_label_set_text_fmt(s_row_labels[i], "阴阳中性 已掌握%u/%u",
+            lv_label_set_text_fmt(s_row_labels[i], "辨性别 %u/%u",
                                   st.nouns_mastered, st.nouns);
             break;
         }
     }
 }
 
-static void show_modes(void) {
+static void show_modes(bool resume_cursor) {
     ruw_category_stats_t st;
     ruw_category_stats(&st, s_filter, RUW_WORD_COUNT, s_category, s_gender,
                        s_stage, s_gender_stage);
@@ -562,12 +562,19 @@ static void show_modes(void) {
     lv_label_set_text_fmt(l2, "新词 %u · 错词 %u", st.fresh, st.wrong);
     lv_obj_set_pos(l2, 12, 42);
 
-    // 动态菜单项:本类无名词时不显示阴阳中性。错题本已挪到首页。
+    // 动态菜单项:本类无名词时不显示辨性别。错题本已挪到首页。
     s_mode_item_count = 0;
     s_mode_items[s_mode_item_count++] = MODE_STUDY;
     s_mode_items[s_mode_item_count++] = MODE_LISTEN;
     if (st.nouns > 0) s_mode_items[s_mode_item_count++] = MODE_GENDER;
+
+    // 从答题回来时,光标停在刚玩的那个模式;新进分类时回到第一行。
     s_mode_cursor = 0;
+    if (resume_cursor) {
+        for (uint8_t i = 0; i < s_mode_item_count; i++) {
+            if (s_mode_items[i] == s_mode) { s_mode_cursor = i; break; }
+        }
+    }
 
     for (uint8_t i = 0; i < s_mode_item_count; i++)
         list_row(scr, 128 + i * 42, 36, "", true);
@@ -687,7 +694,7 @@ static void show_question(void) {
     lv_obj_t *scr = page_begin(PAGE_QUIZ);
     const ruw_word_t *w = &RUW_WORDS[target];
 
-    static const char *const MODE_NAME[4] = { "闯关", "错题", "听音", "阴阳中性" };
+    static const char *const MODE_NAME[4] = { "闯关", "错题", "听音", "辨性别" };
     lv_obj_t *count = label(scr, &ruw_font_20, COL_MUTED, "");
     lv_label_set_text_fmt(count, "%s %u/%u", MODE_NAME[s_mode],
                           s_session.pos + 1, s_session.len);
@@ -816,7 +823,7 @@ static void show_done(void) {
 
     lv_obj_t *scr = page_begin(PAGE_DONE);
     static const char *const DONE_TITLE[4] = {
-        "本关完成", "错题复习完成", "本关完成", "阴阳中性本关完成",
+        "本关完成", "错题复习完成", "本关完成", "辨性别本关完成",
     };
     lv_obj_t *title = label(scr, &ruw_font_20, COL_ACCENT, DONE_TITLE[s_mode]);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 48);
@@ -883,7 +890,7 @@ static void category_input(const input_event_t *in) {
     // 确定:选中当前分类,存盘,进二级模式页。
     s_filter = s_cat_cursor;
     progress_save();
-    show_modes();
+    show_modes(false);
 }
 
 // 首页输入:上/下循环;确定进入;长按确定进设置。
@@ -982,7 +989,7 @@ static void quiz_input(const input_event_t *in) {
     if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
         // 已作答的词进度已保存;本轮不计入轮次。错题本回首页,其余回模式页。
         if (s_mode == MODE_WRONG) show_home();
-        else show_modes();
+        else show_modes(true);
     } else if (in->btn == BSP_BTN_UP && in->ev == BSP_BTN_LONG) {
         play_word(current_word());
     } else if (in->ev != BSP_BTN_CLICK) {
@@ -1015,7 +1022,7 @@ static void handle_input(const input_event_t *in) {
     case PAGE_DONE:
         if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_CLICK) {
             if (s_mode == MODE_WRONG) show_home();
-            else show_modes();
+            else show_modes(true);
         }
         break;
     }
