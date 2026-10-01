@@ -197,6 +197,11 @@ static union {
 #define NVS_SESS_KEY "sess"
 #define SESS_VERSION 1
 
+// v4.4:词表修正版本。第 916 个词替换后,用它把该位置的旧学习状态清零,只做一次。
+#define NVS_WLVER_KEY "wlver"
+#define WLVER_CURRENT 1
+#define WLVER_FIXED_IDX 916
+
 typedef struct {
     uint16_t version;       // 1
     uint16_t word_count;     // = RUW_WORD_COUNT,不一致视为无效
@@ -260,6 +265,28 @@ static void progress_load(void) {
         ESP_LOGI(TAG, "进度格式不匹配(version=%u,len=%u),从头开始",
                  s_blob.v3.version, (unsigned)len);
         return;
+    }
+
+    // v4.4:第 916 个词(原 прийтись/落到)换成 подождать。旧存档里这个位置的词义/性别
+    // 状态会落到新词上,读到 wlver<1 时把它重置为初值,并写 wlver=1,只做一次。
+    {
+        nvs_handle_t hw;
+        uint16_t wlver = 0;
+        if (nvs_open(NVS_NS, NVS_READONLY, &hw) == ESP_OK) {
+            if (nvs_get_u16(hw, NVS_WLVER_KEY, &wlver) != ESP_OK) wlver = 0;
+            nvs_close(hw);
+        }
+        if (wlver < WLVER_CURRENT) {
+            s_stage[WLVER_FIXED_IDX] = RUW_STAGE_NEW;
+            s_last_seen[WLVER_FIXED_IDX] = 0;
+            s_gender_stage[WLVER_FIXED_IDX] = RUW_STAGE_NEW;
+            s_gender_seen[WLVER_FIXED_IDX] = 0;
+            if (nvs_open(NVS_NS, NVS_READWRITE, &hw) == ESP_OK) {
+                nvs_set_u16(hw, NVS_WLVER_KEY, WLVER_CURRENT);
+                nvs_commit(hw);
+                nvs_close(hw);
+            }
+        }
     }
 }
 

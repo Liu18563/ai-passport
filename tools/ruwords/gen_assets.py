@@ -230,6 +230,13 @@ def main():
     if len(words) > 1600:
         sys.exit("word list too large for the NVS progress blob")
 
+    # v4.4: 俄语词不得重复(替换 916 后 приходиться/прийтись 不再重复)。
+    seen_ru = {}
+    for i, (ru, _, _) in enumerate(words):
+        if ru in seen_ru:
+            sys.exit(f"duplicate Russian word {ru!r}: rows {seen_ru[ru]} and {i}")
+        seen_ru[ru] = i
+
     examples = load_examples(words)
 
     blob = bytearray()
@@ -278,11 +285,28 @@ def main():
         chars.update(ex_ru + ex_zh)
     chars.update(chr(c) for c in range(0x20, 0x7F))
     chars.discard("\n")
+
+    # v4.4: glyphs 里每个字符都必须在字体 cmap 中,且不得是 Unicode Cf 控制字符。
+    import unicodedata
+    from fontTools.ttLib import TTFont
+    FONT = os.path.join(ROOT,
+        "managed_components/lvgl__lvgl/tests/src/test_files/fonts/noto/NotoSansSC-Regular.ttf")
+    cmap = TTFont(FONT).getBestCmap()
+    missing = sorted(c for c in chars if ord(c) not in cmap)
+    if missing:
+        sys.exit("glyphs missing from NotoSansSC cmap: "
+                 + " ".join(f"U+{ord(c):04X} {c!r}" for c in missing))
+    cf = sorted(c for c in chars if unicodedata.category(c) == "Cf")
+    if cf:
+        sys.exit("glyphs include Unicode Cf control chars: "
+                 + " ".join(f"U+{ord(c):04X}" for c in cf))
+
     with open(OUT_GLYPHS, "w", encoding="utf-8") as f:
         f.write("".join(sorted(chars)))
 
     secs = sum(e[4] for e in entries) / RATE
-    print(f"words={len(entries)} audio={len(blob) / 1024:.0f} KiB ({secs:.0f} s) glyphs={len(chars)}")
+    print(f"words={len(entries)} audio={len(blob) / 1024:.0f} KiB ({secs:.0f} s) "
+          f"glyphs={len(chars)} cmap_missing=0")
 
 
 if __name__ == "__main__":
