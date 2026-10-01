@@ -1,34 +1,38 @@
-// main/ruwords_logic.h —— 俄语单词斩的纯逻辑:间隔复习(Leitner 盒)、出题、选项生成。
+// main/ruwords_logic.h —— 俄语单词斩的纯逻辑:闯关制、出题、选项生成。
 // 不依赖 ESP-IDF / LVGL,由 tests/test_ruwords_logic.c 在主机上覆盖。
-//
-// 设备没有可靠的实时时钟,所以"到期"按轮次计算:每完成一轮学习 round 加一,
-// 单词在 due_round 到达后才进入复习。
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#define RUW_MAX_LEVEL 5          // 0 = 未学;1..5 = 记忆强度
-#define RUW_SESSION_SIZE 10      // 每轮题数(不含答错重排的)
-#define RUW_SESSION_NEW_MAX 5    // 每轮最多引入的新词
-#define RUW_SESSION_CAP 16       // 队列容量(含答错重排)
-#define RUW_OPTIONS 4
+// 每个词的闯关状态(1 字节)。
+#define RUW_STAGE_NEW    0   // 没学过
+#define RUW_STAGE_DONE   1   // 已掌握,不再出现在闯关和听音里
+#define RUW_STAGE_WRONG2 2   // 错词,还需答对 2 次
+#define RUW_STAGE_WRONG1 3   // 错词,还需答对 1 次
+
+#define RUW_LEVEL_SIZE   10  // 一关 10 题(不含答错重排的)
+#define RUW_WRONG_MAX    5   // 一关先放错词的上限
+#define RUW_SESSION_CAP  20  // 队列容量(含答错重排)
+#define RUW_OPTIONS      4
 
 typedef struct {
-    uint16_t count;              // 词数,<= 容量
-    uint16_t round;              // 已完成的轮数
-    uint8_t *level;              // [count]
-    uint16_t *due_round;         // [count]
+    uint16_t count;              // 词数
+    uint16_t level;              // 已打完的关数
+    uint8_t *stage;              // [count] 词义状态
+    uint16_t *last_seen;         // [count] 最后一次考到的关数
 } ruw_progress_t;
 
 typedef struct {
     uint16_t queue[RUW_SESSION_CAP];
     uint8_t requeued[RUW_SESSION_CAP];  // 该位置是否为答错后重排的题
+    uint16_t current_level;      // 本关序号(考到时写进 last_seen)
     uint8_t len;
     uint8_t pos;
     uint8_t correct;
     uint8_t wrong;
     uint8_t new_words;
+    uint8_t wrong_words;
 } ruw_session_t;
 
 typedef struct {
@@ -36,26 +40,26 @@ typedef struct {
     uint8_t answer;              // 正确选项位置 0..3
 } ruw_question_t;
 
-// 轮次间隔:答对后 level 对应的间隔轮数。
-uint16_t ruw_interval(uint8_t level);
-
 void ruw_progress_reset(ruw_progress_t *p);
 
-// 统计:已学(level>0)、已掌握(level==MAX)、当前到期待复习数。
-uint16_t ruw_count_learned(const ruw_progress_t *p);
-uint16_t ruw_count_mastered(const ruw_progress_t *p);
-uint16_t ruw_count_due(const ruw_progress_t *p);
+// 状态转移:返回作答后的新状态。requeued(重排题)时原样返回,不改状态。
+uint8_t ruw_stage_next(uint8_t stage, bool correct, bool requeued);
 
-// 组一轮题:先放到期复习(最早到期优先),再补新词,不足时提前复习。
-// eligible 为 NULL 时全部词可选;否则只选 eligible[i] 非零的词(分类、错题本)。
+// 统计:DONE 数、NEW 数、错词(WRONG1/WRONG2)数。
+uint16_t ruw_count_mastered(const ruw_progress_t *p);
+uint16_t ruw_count_new(const ruw_progress_t *p);
+uint16_t ruw_count_wrong(const ruw_progress_t *p);
+
+// 组一关:先错词(最多 5,按 last_seen 最久没考优先),再 NEW 补满;
+// NEW 用完后错词可占满 10。eligible 为 NULL 时全部可选,否则只选非零项。
 // 返回题数;0 表示范围内没有可学内容。
 uint8_t ruw_session_build(ruw_session_t *s, const ruw_progress_t *p, const uint8_t *eligible);
 
-// 记录当前题的作答结果并前进。答错的题(非重排题)会追加到队尾再考一次。
-// 返回 true 表示本轮还有下一题。
+// 记录当前题作答并前进。答错的非重排题追加到队尾再考一次(重排题不计状态)。
+// 返回 true 表示本关还有下一题。
 bool ruw_session_answer(ruw_session_t *s, ruw_progress_t *p, bool correct);
 
-// 一轮结束时调用:round 加一。
+// 一关打完:关数 +1。
 void ruw_session_finish(ruw_progress_t *p);
 
 // 生成四选一。category 为每个词的分类数组;优先选同类干扰项。

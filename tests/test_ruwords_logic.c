@@ -6,115 +6,149 @@
 
 #define N 40
 
-static uint8_t s_level[N];
-static uint16_t s_due[N];
+static uint8_t s_stage[N];
+static uint16_t s_seen[N];
 static uint8_t s_cat[N];
 
 static ruw_progress_t make_progress(void) {
-    ruw_progress_t p = { .count = N, .level = s_level, .due_round = s_due };
+    ruw_progress_t p = { .count = N, .level = 0, .stage = s_stage, .last_seen = s_seen };
     ruw_progress_reset(&p);
     return p;
 }
 
-static void test_first_session_is_new_words(void) {
+// 2.2 节每一条状态转移。
+static void test_stage_transitions(void) {
+    assert(ruw_stage_next(RUW_STAGE_NEW, true, false) == RUW_STAGE_DONE);
+    assert(ruw_stage_next(RUW_STAGE_NEW, false, false) == RUW_STAGE_WRONG2);
+    assert(ruw_stage_next(RUW_STAGE_WRONG2, true, false) == RUW_STAGE_WRONG1);
+    assert(ruw_stage_next(RUW_STAGE_WRONG2, false, false) == RUW_STAGE_WRONG2);
+    assert(ruw_stage_next(RUW_STAGE_WRONG1, true, false) == RUW_STAGE_DONE);
+    assert(ruw_stage_next(RUW_STAGE_WRONG1, false, false) == RUW_STAGE_WRONG2);
+    assert(ruw_stage_next(RUW_STAGE_DONE, true, false) == RUW_STAGE_DONE);
+    assert(ruw_stage_next(RUW_STAGE_DONE, false, false) == RUW_STAGE_DONE);
+}
+
+// 重排题答对、答错都不改变状态。
+static void test_requeued_keeps_stage(void) {
+    assert(ruw_stage_next(RUW_STAGE_NEW, true, true) == RUW_STAGE_NEW);
+    assert(ruw_stage_next(RUW_STAGE_WRONG2, true, true) == RUW_STAGE_WRONG2);
+    assert(ruw_stage_next(RUW_STAGE_WRONG1, false, true) == RUW_STAGE_WRONG1);
+    assert(ruw_stage_next(RUW_STAGE_WRONG2, false, true) == RUW_STAGE_WRONG2);
+}
+
+// 第一关全是 NEW,一关 10 题。
+static void test_first_level_new_words(void) {
     ruw_progress_t p = make_progress();
     ruw_session_t s;
     uint8_t n = ruw_session_build(&s, &p, NULL);
-    // 没有已学词时只能引入新词,上限 RUW_SESSION_NEW_MAX。
-    assert(n == RUW_SESSION_NEW_MAX);
-    assert(s.new_words == RUW_SESSION_NEW_MAX);
+    assert(n == RUW_LEVEL_SIZE);
+    assert(s.new_words == 10 && s.wrong_words == 0);
+    assert(s.current_level == 1);
     for (uint8_t i = 0; i < n; i++) assert(s.queue[i] == i);
 }
 
-static void test_wrong_answer_is_requeued_once(void) {
+// 答错的非重排题重排到队尾;重排题答错不改状态、不再追加。
+static void test_wrong_answer_requeued(void) {
     ruw_progress_t p = make_progress();
     ruw_session_t s;
     uint8_t n = ruw_session_build(&s, &p, NULL);
-    assert(ruw_session_answer(&s, &p, false));
-    assert(s.len == n + 1);
-    assert(s.queue[n] == 0 && s.requeued[n]);
-    assert(p.level[0] == 1);
+    assert(ruw_session_answer(&s, &p, false));  // 词0 NEW 答错
+    assert(s_stage[0] == RUW_STAGE_WRONG2);
+    assert(s.len == n + 1 && s.queue[n] == 0 && s.requeued[n]);
+    assert(s_seen[0] == 1);
     for (uint8_t i = 1; i < n; i++) assert(ruw_session_answer(&s, &p, true));
-    // 重排题再答错也不再追加。
-    assert(!ruw_session_answer(&s, &p, false));
+    assert(!ruw_session_answer(&s, &p, false));  // 重排题再答错
+    assert(s_stage[0] == RUW_STAGE_WRONG2);
     assert(s.len == n + 1);
-    assert(s.correct == n - 1 && s.wrong == 2);
 }
 
-static void test_levels_and_due_rounds(void) {
+// 一关先放错词最多 5 个,按最久没考优先,再用 NEW 补满。
+static void test_level_has_at_most_five_wrong(void) {
+    ruw_progress_t p = make_progress();
+    for (int i = 0; i < 8; i++) {
+        s_stage[i] = RUW_STAGE_WRONG2;
+        s_seen[i] = (uint16_t)(i + 1);
+    }
+    ruw_session_t s;
+    uint8_t n = ruw_session_build(&s, &p, NULL);
+    assert(n == RUW_LEVEL_SIZE);
+    assert(s.wrong_words == 5 && s.new_words == 5);
+    assert(s.queue[0] == 0);  // 最久没考(last_seen=1)
+    for (int i = 0; i < 5; i++) assert(s.queue[i] == i);
+    for (int i = 5; i < 10; i++) assert(s.queue[i] >= 8);
+}
+
+// NEW 用完后,错词可以占满 10 个。
+static void test_wrong_fills_when_no_new(void) {
+    ruw_progress_t p = make_progress();
+    for (int i = 0; i < 30; i++) s_stage[i] = RUW_STAGE_DONE;
+    for (int i = 30; i < N; i++) s_stage[i] = RUW_STAGE_WRONG2;
+    ruw_session_t s;
+    uint8_t n = ruw_session_build(&s, &p, NULL);
+    assert(n == RUW_LEVEL_SIZE);
+    assert(s.wrong_words == 10 && s.new_words == 0);
+    for (int i = 0; i < 10; i++) assert(s.queue[i] >= 30);
+}
+
+// 全部 DONE 时组关返回 0。
+static void test_all_done_returns_zero(void) {
+    ruw_progress_t p = make_progress();
+    for (int i = 0; i < N; i++) s_stage[i] = RUW_STAGE_DONE;
+    ruw_session_t s;
+    assert(ruw_session_build(&s, &p, NULL) == 0);
+}
+
+// 一关打完关数 +1,打完前不加。
+static void test_finish_increments_level(void) {
     ruw_progress_t p = make_progress();
     ruw_session_t s;
     ruw_session_build(&s, &p, NULL);
     while (ruw_session_answer(&s, &p, true)) {}
+    assert(p.level == 0);
     ruw_session_finish(&p);
-    assert(p.round == 1);
-    assert(ruw_count_learned(&p) == RUW_SESSION_NEW_MAX);
-    // level 1 间隔 1 轮,下一轮全部到期。
-    assert(ruw_count_due(&p) == RUW_SESSION_NEW_MAX);
-
-    uint8_t n = ruw_session_build(&s, &p, NULL);
-    assert(n == RUW_SESSION_SIZE);
-    assert(s.new_words == RUW_SESSION_NEW_MAX);
-    for (uint8_t i = 0; i < RUW_SESSION_NEW_MAX; i++) assert(s.queue[i] < RUW_SESSION_NEW_MAX);
+    assert(p.level == 1);
 }
 
-static void test_mastery_caps_level(void) {
-    ruw_progress_t p = make_progress();
-    for (int round = 0; round < 60; round++) {
-        ruw_session_t s;
-        ruw_session_build(&s, &p, NULL);
-        while (ruw_session_answer(&s, &p, true)) {}
-        ruw_session_finish(&p);
-    }
-    assert(ruw_count_mastered(&p) > 0);
-    for (int i = 0; i < N; i++) assert(p.level[i] <= RUW_MAX_LEVEL);
-    assert(ruw_count_learned(&p) == N);
-}
-
-static void test_review_backlog_still_admits_new_words(void) {
-    ruw_progress_t p = make_progress();
-    for (int i = 0; i < 30; i++) { p.level[i] = 2; p.due_round[i] = 0; }
-    p.round = 5;
-    ruw_session_t s;
-    ruw_session_build(&s, &p, NULL);
-    assert(s.len == RUW_SESSION_SIZE);
-    assert(s.new_words >= 1);
-}
-
+// 分类筛选、错题本筛选下,组出的题全在范围内。
 static void test_eligible_filter(void) {
     ruw_progress_t p = make_progress();
     uint8_t only[N] = {0};
     only[3] = only[17] = only[30] = 1;
     ruw_session_t s;
-    // 分类范围内只有 3 个新词。
     assert(ruw_session_build(&s, &p, only) == 3);
     for (uint8_t i = 0; i < s.len; i++) assert(only[s.queue[i]]);
-    // 错题本:全是已学词,未到期也要能考(提前复习)。
+
     uint8_t wrong[N] = {0};
-    p.level[5] = 1; p.due_round[5] = 9;
-    p.level[6] = 3; p.due_round[6] = 0;
+    s_stage[5] = RUW_STAGE_WRONG2; s_seen[5] = 3;
+    s_stage[6] = RUW_STAGE_WRONG1; s_seen[6] = 1;
     wrong[5] = wrong[6] = 1;
     assert(ruw_session_build(&s, &p, wrong) == 2);
-    assert(s.queue[0] == 6);  // 已到期的排前面
+    assert(s.queue[0] == 6);  // 最久没考
     assert(s.new_words == 0);
     uint8_t none[N] = {0};
     assert(ruw_session_build(&s, &p, none) == 0);
 }
 
-static void test_filtered_session_stays_eligible(void) {
-    // 开始学习 / 听音选义都按分类筛选用同一 eligible 掩码:
-    // 一轮里即使答错重排到队尾,队列里也不能出现范围外的词。
+// 筛选范围内答错重排,重排进来的也必须在范围内。
+static void test_filtered_requeue_in_range(void) {
     ruw_progress_t p = make_progress();
     uint8_t elig[N] = {0};
     for (int i = 0; i < 10; i++) elig[i] = 1;
     ruw_session_t s;
     uint8_t n = ruw_session_build(&s, &p, elig);
     assert(n > 0);
-    for (uint16_t i = 0; i < n; i++) assert(elig[s.queue[i]]);
-    // 当前题答错会重排到队尾;重排进来的也必须在范围内。
     (void)ruw_session_answer(&s, &p, false);
     while (ruw_session_answer(&s, &p, true)) {}
     for (uint16_t i = 0; i < s.len; i++) assert(elig[s.queue[i]]);
+}
+
+static void test_counts(void) {
+    ruw_progress_t p = make_progress();
+    s_stage[0] = s_stage[1] = RUW_STAGE_DONE;
+    s_stage[2] = RUW_STAGE_WRONG1; s_stage[3] = RUW_STAGE_WRONG2;
+    assert(ruw_count_mastered(&p) == 2);
+    assert(ruw_count_wrong(&p) == 2);
+    assert(ruw_count_new(&p) == N - 4);
 }
 
 static void test_question_options(void) {
@@ -157,13 +191,17 @@ static void test_adpcm_decode(void) {
 }
 
 int main(void) {
-    test_first_session_is_new_words();
-    test_wrong_answer_is_requeued_once();
-    test_levels_and_due_rounds();
-    test_mastery_caps_level();
-    test_review_backlog_still_admits_new_words();
+    test_stage_transitions();
+    test_requeued_keeps_stage();
+    test_first_level_new_words();
+    test_wrong_answer_requeued();
+    test_level_has_at_most_five_wrong();
+    test_wrong_fills_when_no_new();
+    test_all_done_returns_zero();
+    test_finish_increments_level();
     test_eligible_filter();
-    test_filtered_session_stays_eligible();
+    test_filtered_requeue_in_range();
+    test_counts();
     test_question_options();
     test_adpcm_decode();
     return 0;

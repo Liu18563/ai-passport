@@ -70,13 +70,13 @@ typedef struct {
     bsp_btn_ev_t ev;
 } input_event_t;
 
-static uint8_t s_level[RUW_WORD_COUNT];
-static uint16_t s_due[RUW_WORD_COUNT];
-static uint8_t s_wrong[RUW_WORD_COUNT];       // 答错次数;>0 即在错题本里
+static uint8_t s_stage[RUW_WORD_COUNT];       // 词义闯关状态,见 RUW_STAGE_*
+static uint16_t s_last_seen[RUW_WORD_COUNT];  // 最后一次考到的关数
 static uint8_t s_category[RUW_WORD_COUNT];
 static uint8_t s_eligible[RUW_WORD_COUNT];
 static ruw_progress_t s_progress = {
-    .count = RUW_WORD_COUNT, .level = s_level, .due_round = s_due,
+    .count = RUW_WORD_COUNT, .level = 0,
+    .stage = s_stage, .last_seen = s_last_seen,
 };
 static uint8_t s_volume_level = VOLUME_DEFAULT;
 static uint8_t s_filter;                       // 0 = 全部;n = 第 n-1 个分类
@@ -114,8 +114,20 @@ static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
 #define NVS_NS "ruwords"
 #define NVS_KEY "prog"
-#define PROG_VERSION 2
+#define PROG_VERSION 3
 
+// v3 存档(本块只含词义部分;性别状态在「阴阳中性」块加入)。
+typedef struct {
+    uint16_t version;
+    uint16_t count;
+    uint16_t level;            // 已打完的关数
+    uint8_t volume_level;
+    uint8_t filter;
+    uint8_t stage[RUW_WORD_COUNT];
+    uint16_t last_seen[RUW_WORD_COUNT];
+} saved_progress_t;
+
+// v2(旧 Leitner 存档):保留定义,供「存储迁移」块做 v2→v3 迁移。
 typedef struct {
     uint16_t version;
     uint16_t count;
@@ -125,25 +137,15 @@ typedef struct {
     uint8_t level[RUW_WORD_COUNT];
     uint8_t wrong[RUW_WORD_COUNT];
     uint16_t due[RUW_WORD_COUNT];
-} saved_progress_t;
-
-// v1(首版)只有 level/due,升级时保留学习进度。
-typedef struct {
-    uint16_t version;
-    uint16_t count;
-    uint16_t round;
-    uint8_t level[RUW_WORD_COUNT];
-    uint16_t due[RUW_WORD_COUNT];
-} saved_progress_v1_t;
+} saved_progress_v2_t;
 
 static union {
-    saved_progress_t v2;
-    saved_progress_v1_t v1;
+    saved_progress_t v3;
+    saved_progress_v2_t v2;
 } s_blob;  // 静态:避免占 input 任务栈
 
 static void progress_load(void) {
     ruw_progress_reset(&s_progress);
-    memset(s_wrong, 0, sizeof(s_wrong));
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
     size_t len = sizeof(s_blob);
@@ -151,53 +153,39 @@ static void progress_load(void) {
     nvs_close(h);
     if (err != ESP_OK) return;
 
-    // 词表变化后旧进度对不上下标,直接从头开始。
-    if (len == sizeof(saved_progress_t) && s_blob.v2.version == PROG_VERSION
-        && s_blob.v2.count == RUW_WORD_COUNT) {
-        s_progress.round = s_blob.v2.round;
-        memcpy(s_level, s_blob.v2.level, sizeof(s_level));
-        memcpy(s_due, s_blob.v2.due, sizeof(s_due));
-        memcpy(s_wrong, s_blob.v2.wrong, sizeof(s_wrong));
-        if (s_blob.v2.volume_level < VOLUME_LEVELS) s_volume_level = s_blob.v2.volume_level;
-        if (s_blob.v2.filter <= RUW_CATEGORY_COUNT) s_filter = s_blob.v2.filter;
-    } else if (len == sizeof(saved_progress_v1_t) && s_blob.v1.version == 1
-               && s_blob.v1.count == RUW_WORD_COUNT) {
-        s_progress.round = s_blob.v1.round;
-        memcpy(s_level, s_blob.v1.level, sizeof(s_level));
-        memcpy(s_due, s_blob.v1.due, sizeof(s_due));
-        ESP_LOGI(TAG, "已从 v1 进度升级");
+    // v2→v3 按原文迁移在「存储迁移」块实现;本块只认 v3,旧格式从头开始。
+    if (len == sizeof(saved_progress_t) && s_blob.v3.version == PROG_VERSION
+        && s_blob.v3.count == RUW_WORD_COUNT) {
+        s_progress.level = s_blob.v3.level;
+        memcpy(s_stage, s_blob.v3.stage, sizeof(s_stage));
+        memcpy(s_last_seen, s_blob.v3.last_seen, sizeof(s_last_seen));
+        if (s_blob.v3.volume_level < VOLUME_LEVELS) s_volume_level = s_blob.v3.volume_level;
+        if (s_blob.v3.filter <= RUW_CATEGORY_COUNT) s_filter = s_blob.v3.filter;
     } else {
         ESP_LOGI(TAG, "进度格式不匹配,从头开始");
         return;
     }
     for (int i = 0; i < RUW_WORD_COUNT; i++) {
-        if (s_level[i] > RUW_MAX_LEVEL) s_level[i] = RUW_MAX_LEVEL;
+        if (s_stage[i] > RUW_STAGE_WRONG1) s_stage[i] = RUW_STAGE_NEW;
     }
 }
 
 static void progress_save(void) {
-    s_blob.v2.version = PROG_VERSION;
-    s_blob.v2.count = RUW_WORD_COUNT;
-    s_blob.v2.round = s_progress.round;
-    s_blob.v2.volume_level = s_volume_level;
-    s_blob.v2.filter = s_filter;
-    memcpy(s_blob.v2.level, s_level, sizeof(s_level));
-    memcpy(s_blob.v2.wrong, s_wrong, sizeof(s_wrong));
-    memcpy(s_blob.v2.due, s_due, sizeof(s_due));
+    s_blob.v3.version = PROG_VERSION;
+    s_blob.v3.count = RUW_WORD_COUNT;
+    s_blob.v3.level = s_progress.level;
+    s_blob.v3.volume_level = s_volume_level;
+    s_blob.v3.filter = s_filter;
+    memcpy(s_blob.v3.stage, s_stage, sizeof(s_stage));
+    memcpy(s_blob.v3.last_seen, s_last_seen, sizeof(s_last_seen));
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
-        err = nvs_set_blob(h, NVS_KEY, &s_blob.v2, sizeof(s_blob.v2));
+        err = nvs_set_blob(h, NVS_KEY, &s_blob.v3, sizeof(s_blob.v3));
         if (err == ESP_OK) err = nvs_commit(h);
         nvs_close(h);
     }
     if (err != ESP_OK) ESP_LOGE(TAG, "保存进度失败: %s", esp_err_to_name(err));
-}
-
-static uint16_t count_wrong(void) {
-    uint16_t n = 0;
-    for (int i = 0; i < RUW_WORD_COUNT; i++) n += s_wrong[i] > 0;
-    return n;
 }
 
 // ---------------------------------------------------------------- 音频
@@ -338,7 +326,8 @@ static void home_menu_text(void) {
     lv_label_set_text_fmt(s_row_labels[MENU_START], "开始学习 · %s", filter_name());
     lv_label_set_text_fmt(s_row_labels[MENU_LISTEN], "听音选义 · %s", filter_name());
     lv_label_set_text_fmt(s_row_labels[MENU_CATEGORY], "选择分类：%s", filter_name());
-    lv_label_set_text_fmt(s_row_labels[MENU_WRONG], "错题本 · %u 个", count_wrong());
+    lv_label_set_text_fmt(s_row_labels[MENU_WRONG], "错题本 · %u 个",
+                          ruw_count_wrong(&s_progress));
     static const char *const BARS[VOLUME_LEVELS] = {
         "●○○○○", "●●○○○", "●●●○○", "●●●●○", "●●●●●",
     };
@@ -352,26 +341,26 @@ static void show_home(void) {
     lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, "俄语单词斩");
     lv_obj_set_pos(title, 42, 10);
 
-    uint16_t learned = ruw_count_learned(&s_progress);
+    uint16_t mastered = ruw_count_mastered(&s_progress);
     lv_obj_t *card = box(scr, 16, 44, 208, 86, COL_CARD, 16);
     lv_obj_t *big = label(card, &ruw_font_36, COL_INK, "");
-    lv_label_set_text_fmt(big, "%u", learned);
+    lv_label_set_text_fmt(big, "%u", mastered);
     lv_obj_set_pos(big, 16, 4);
     lv_obj_t *sub = label(card, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(sub, "/ %d 已学", RUW_WORD_COUNT);
+    lv_label_set_text_fmt(sub, "/ %d 已掌握", RUW_WORD_COUNT);
     lv_obj_align_to(sub, big, LV_ALIGN_OUT_RIGHT_BOTTOM, 6, -6);
 
     lv_obj_t *bar = lv_bar_create(card);
     lv_obj_set_size(bar, 176, 6);
     lv_obj_set_pos(bar, 16, 54);
     lv_bar_set_range(bar, 0, RUW_WORD_COUNT);
-    lv_bar_set_value(bar, learned, LV_ANIM_OFF);
+    lv_bar_set_value(bar, mastered, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(bar, lv_color_hex(COL_BG), LV_PART_MAIN);
     lv_obj_set_style_bg_color(bar, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
 
     lv_obj_t *stats = label(card, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(stats, "复习 %u · 掌握 %u", ruw_count_due(&s_progress),
-                          ruw_count_mastered(&s_progress));
+    lv_label_set_text_fmt(stats, "新词 %u · 错词 %u", ruw_count_new(&s_progress),
+                          ruw_count_wrong(&s_progress));
     lv_obj_set_pos(stats, 16, 60);
 
     // 5 个菜单项在 320 高屏内压缩排布:首行 y=134,行距 37,行高 34,末行底边 316。
@@ -400,7 +389,7 @@ static void category_refresh(void) {
         for (int i = 0; i < RUW_WORD_COUNT; i++) {
             if (item == 0 || s_category[i] == item - 1) {
                 words++;
-                learned += s_level[i] > 0;
+                learned += s_stage[i] != RUW_STAGE_NEW;
             }
         }
         lv_label_set_text_fmt(s_row_labels[r], "%s%s  %u/%u", item == s_filter ? "● " : "",
@@ -470,16 +459,18 @@ static void show_question(void) {
     lv_obj_set_style_bg_color(bar, lv_color_hex(COL_CARD), LV_PART_MAIN);
     lv_obj_set_style_bg_color(bar, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
 
+    // 卡片右上角小标签:新词 / 错词 / 再考一次(听音模式也显示)。
+    const char *tag = s_session.requeued[s_session.pos] ? "再考一次"
+                    : (s_stage[target] == RUW_STAGE_NEW ? "新词" : "错词");
+    lv_obj_t *chip = label(scr, &ruw_font_20, COL_ACCENT, tag);
+    lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 44);
+
     if (s_mode == MODE_LISTEN) {
         // 听音模式:作答前不露俄语/转写,只放一个大"听"提示区。
         s_hear_prompt = box(scr, 16, 62, 208, 60, COL_CARD, 14);
         lv_obj_t *hear = label(s_hear_prompt, &ruw_font_20, COL_ACCENT, "听");
         lv_obj_center(hear);
     } else {
-        const char *tag = s_session.requeued[s_session.pos] ? "再考一次"
-                        : (s_level[target] == 0 ? "新词" : RUW_CATEGORIES[w->category]);
-        lv_obj_t *chip = label(scr, &ruw_font_20, COL_ACCENT, tag);
-        lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 44);
         create_ru_block(scr, w);
     }
 
@@ -525,11 +516,7 @@ static void submit_answer(void) {
     bool ok = s_selected == s_question.answer;
     uint16_t target = s_session.queue[s_session.pos];
 
-    if (!ok) {
-        if (s_wrong[target] < UINT8_MAX) s_wrong[target]++;
-    } else if (s_mode == MODE_WRONG && !s_session.requeued[s_session.pos]) {
-        s_wrong[target] = 0;  // 错题本里一次答对即移出
-    }
+    // 状态转移完全由纯逻辑处理(含重排题不改状态、答错重排)。
     ruw_session_answer(&s_session, &s_progress, ok);
     progress_save();  // 随时关机也不丢进度
 
@@ -553,7 +540,7 @@ static void show_done(void) {
 
     lv_obj_t *scr = page_begin(PAGE_DONE);
     lv_obj_t *title = label(scr, &ruw_font_20, COL_ACCENT,
-                            s_mode == MODE_WRONG ? "错题复习完成" : "本轮完成");
+                            s_mode == MODE_WRONG ? "错题复习完成" : "本关完成");
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 48);
 
     lv_obj_t *card = box(scr, 16, 84, 208, 130, COL_CARD, 16);
@@ -565,10 +552,10 @@ static void show_done(void) {
     lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 66);
     lv_obj_t *nw = label(card, &ruw_font_20, COL_INK, "");
     if (s_mode == MODE_WRONG) {
-        lv_label_set_text_fmt(nw, "错题本剩 %u 个", count_wrong());
+        lv_label_set_text_fmt(nw, "错题本剩 %u 个", ruw_count_wrong(&s_progress));
     } else {
-        lv_label_set_text_fmt(nw, "新词 %u · 已学 %u", s_session.new_words,
-                              ruw_count_learned(&s_progress));
+        lv_label_set_text_fmt(nw, "新词 %u · 已掌握 %u", s_session.new_words,
+                              ruw_count_mastered(&s_progress));
     }
     lv_obj_align(nw, LV_ALIGN_TOP_MID, 0, 94);
 
@@ -579,8 +566,9 @@ static void show_done(void) {
 
 static bool start_session(study_mode_t mode) {
     for (int i = 0; i < RUW_WORD_COUNT; i++) {
-        s_eligible[i] = mode == MODE_WRONG ? s_wrong[i] > 0
-                      : (s_filter == 0 || s_category[i] == s_filter - 1);
+        s_eligible[i] = mode == MODE_WRONG
+            ? (s_stage[i] == RUW_STAGE_WRONG1 || s_stage[i] == RUW_STAGE_WRONG2)
+            : (s_filter == 0 || s_category[i] == s_filter - 1);
     }
     if (ruw_session_build(&s_session, &s_progress, s_eligible) == 0) return false;
     s_mode = mode;

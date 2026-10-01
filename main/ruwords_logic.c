@@ -3,84 +3,96 @@
 
 #include <string.h>
 
-static const uint16_t INTERVALS[RUW_MAX_LEVEL + 1] = { 0, 1, 2, 4, 8, 16 };
-
-uint16_t ruw_interval(uint8_t level) {
-    if (level > RUW_MAX_LEVEL) level = RUW_MAX_LEVEL;
-    return INTERVALS[level];
-}
-
 void ruw_progress_reset(ruw_progress_t *p) {
-    p->round = 0;
-    memset(p->level, 0, p->count);
-    memset(p->due_round, 0, p->count * sizeof(p->due_round[0]));
+    p->level = 0;
+    memset(p->stage, 0, p->count);
+    memset(p->last_seen, 0, p->count * sizeof(p->last_seen[0]));
 }
 
-uint16_t ruw_count_learned(const ruw_progress_t *p) {
-    uint16_t n = 0;
-    for (uint16_t i = 0; i < p->count; i++) n += p->level[i] > 0;
-    return n;
+uint8_t ruw_stage_next(uint8_t stage, bool correct, bool requeued) {
+    if (requeued) return stage;  // 重排题不改状态
+    if (correct) {
+        switch (stage) {
+        case RUW_STAGE_NEW:    return RUW_STAGE_DONE;
+        case RUW_STAGE_WRONG2: return RUW_STAGE_WRONG1;
+        case RUW_STAGE_WRONG1: return RUW_STAGE_DONE;
+        case RUW_STAGE_DONE:   return RUW_STAGE_DONE;
+        }
+    } else {
+        switch (stage) {
+        case RUW_STAGE_NEW:    return RUW_STAGE_WRONG2;
+        case RUW_STAGE_WRONG1:
+        case RUW_STAGE_WRONG2: return RUW_STAGE_WRONG2;
+        case RUW_STAGE_DONE:   return RUW_STAGE_DONE;
+        }
+    }
+    return stage;
 }
 
 uint16_t ruw_count_mastered(const ruw_progress_t *p) {
     uint16_t n = 0;
-    for (uint16_t i = 0; i < p->count; i++) n += p->level[i] >= RUW_MAX_LEVEL;
+    for (uint16_t i = 0; i < p->count; i++) n += p->stage[i] == RUW_STAGE_DONE;
     return n;
 }
 
-static bool is_due(const ruw_progress_t *p, uint16_t i) {
-    return p->level[i] > 0 && p->due_round[i] <= p->round;
-}
-
-uint16_t ruw_count_due(const ruw_progress_t *p) {
+uint16_t ruw_count_new(const ruw_progress_t *p) {
     uint16_t n = 0;
-    for (uint16_t i = 0; i < p->count; i++) n += is_due(p, i);
+    for (uint16_t i = 0; i < p->count; i++) n += p->stage[i] == RUW_STAGE_NEW;
     return n;
 }
 
-static bool in_session(const ruw_session_t *s, uint16_t w) {
-    for (uint8_t i = 0; i < s->len; i++) {
+uint16_t ruw_count_wrong(const ruw_progress_t *p) {
+    uint16_t n = 0;
+    for (uint16_t i = 0; i < p->count; i++)
+        n += p->stage[i] == RUW_STAGE_WRONG1 || p->stage[i] == RUW_STAGE_WRONG2;
+    return n;
+}
+
+static bool in_queue(const ruw_session_t *s, uint16_t w) {
+    for (uint8_t i = 0; i < s->len; i++)
         if (s->queue[i] == w) return true;
-    }
     return false;
 }
 
-// 从已学词里挑 due_round 最小、且未入队的一个;only_due 时要求已到期。
-static int pick_earliest(const ruw_session_t *s, const ruw_progress_t *p,
-                         const uint8_t *eligible, bool only_due) {
+// 找一个未入队的错词,last_seen 最小(最久没考)的优先。
+static int pick_wrong(const ruw_session_t *s, const ruw_progress_t *p,
+                      const uint8_t *eligible) {
     int best = -1;
     for (uint16_t i = 0; i < p->count; i++) {
         if (eligible && !eligible[i]) continue;
-        if (p->level[i] == 0 || in_session(s, i)) continue;
-        if (only_due && !is_due(p, i)) continue;
-        if (best < 0 || p->due_round[i] < p->due_round[best]) best = i;
+        if (p->stage[i] != RUW_STAGE_WRONG1 && p->stage[i] != RUW_STAGE_WRONG2) continue;
+        if (in_queue(s, i)) continue;
+        if (best < 0 || p->last_seen[i] < p->last_seen[best]) best = i;
     }
     return best;
 }
 
-uint8_t ruw_session_build(ruw_session_t *s, const ruw_progress_t *p, const uint8_t *eligible) {
+uint8_t ruw_session_build(ruw_session_t *s, const ruw_progress_t *p,
+                          const uint8_t *eligible) {
     memset(s, 0, sizeof(*s));
+    s->current_level = (p->level < UINT16_MAX) ? (uint16_t)(p->level + 1) : UINT16_MAX;
 
-    // 复习给新词留出位置,避免复习堆积后永远学不到新词。
-    uint8_t review_cap = RUW_SESSION_SIZE - RUW_SESSION_NEW_MAX / 2;
-    while (s->len < review_cap) {
-        int w = pick_earliest(s, p, eligible, true);
+    // 1. 先放错词,最多 5 个,给新词留位置。
+    while (s->len < RUW_WRONG_MAX) {
+        int w = pick_wrong(s, p, eligible);
         if (w < 0) break;
         s->queue[s->len++] = (uint16_t)w;
+        s->wrong_words++;
     }
-    for (uint16_t i = 0; i < p->count && s->len < RUW_SESSION_SIZE
-                         && s->new_words < RUW_SESSION_NEW_MAX; i++) {
-        if (p->level[i] == 0 && (!eligible || eligible[i])) {
+    // 2. 用 NEW 补满 10。
+    for (uint16_t i = 0; i < p->count && s->len < RUW_LEVEL_SIZE; i++) {
+        if (p->stage[i] == RUW_STAGE_NEW && (!eligible || eligible[i])
+            && !in_queue(s, i)) {
             s->queue[s->len++] = i;
             s->new_words++;
         }
     }
-    // 剩余到期复习,其次提前复习,把一轮补满。
-    while (s->len < RUW_SESSION_SIZE) {
-        int w = pick_earliest(s, p, eligible, true);
-        if (w < 0) w = pick_earliest(s, p, eligible, false);
+    // 3. NEW 用完后,剩余错词占满 10。
+    while (s->len < RUW_LEVEL_SIZE) {
+        int w = pick_wrong(s, p, eligible);
         if (w < 0) break;
         s->queue[s->len++] = (uint16_t)w;
+        s->wrong_words++;
     }
     return s->len;
 }
@@ -90,29 +102,25 @@ bool ruw_session_answer(ruw_session_t *s, ruw_progress_t *p, bool correct) {
     uint16_t w = s->queue[s->pos];
     bool requeued = s->requeued[s->pos];
 
-    if (correct) {
-        s->correct++;
-        // 重排题答对只确认记住,不再升级,防止一轮内连升两级。
-        if (!requeued && p->level[w] < RUW_MAX_LEVEL) p->level[w]++;
-        if (p->level[w] == 0) p->level[w] = 1;
-    } else {
-        s->wrong++;
-        p->level[w] = 1;
-        if (!requeued && s->len < RUW_SESSION_CAP) {
-            s->queue[s->len] = w;
-            s->requeued[s->len] = 1;
-            s->len++;
-        }
+    if (correct) s->correct++;
+    else s->wrong++;
+
+    p->stage[w] = ruw_stage_next(p->stage[w], correct, requeued);
+    p->last_seen[w] = s->current_level;
+
+    // 非重排题答错:关尾重排再考一次。
+    if (!correct && !requeued && s->len < RUW_SESSION_CAP) {
+        s->queue[s->len] = w;
+        s->requeued[s->len] = 1;
+        s->len++;
     }
-    // 本轮结束时 round+1,所以间隔从下一轮开始算。
-    p->due_round[w] = (uint16_t)(p->round + ruw_interval(p->level[w]));
 
     s->pos++;
     return s->pos < s->len;
 }
 
 void ruw_session_finish(ruw_progress_t *p) {
-    if (p->round < UINT16_MAX) p->round++;
+    if (p->level < UINT16_MAX) p->level++;
 }
 
 static uint32_t next_rand(uint32_t *seed) {
@@ -125,9 +133,8 @@ static uint32_t next_rand(uint32_t *seed) {
 }
 
 static bool chosen(const ruw_question_t *q, uint8_t n, uint16_t w) {
-    for (uint8_t i = 0; i < n; i++) {
+    for (uint8_t i = 0; i < n; i++)
         if (q->word[i] == w) return true;
-    }
     return false;
 }
 
@@ -154,7 +161,6 @@ void ruw_question_make(ruw_question_t *q, uint16_t target, uint16_t count,
         q->word[i] = q->word[j];
         q->word[j] = t;
     }
-    for (uint8_t i = 0; i < RUW_OPTIONS; i++) {
+    for (uint8_t i = 0; i < RUW_OPTIONS; i++)
         if (q->word[i] == target) q->answer = i;
-    }
 }
