@@ -1,39 +1,55 @@
-# 词库数据来源（俄语 A2 约 1300 词）
+<p align="right">
+  <a href="SOURCES.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
 
-## 数据来源
+# Vocabulary Data Sources (Russian A2, ~1300 words)
 
-- 词目、重音、词性、性（gender）、英文释义均取自 **OpenRussian** 项目：
-  - 仓库：https://github.com/Badestrand/russian-dictionary
-  - 许可：**CC BY-SA 4.0**（Creative Commons Attribution-ShareAlike 4.0 International）
-  - 使用文件：`nouns.csv`、`verbs.csv`、`adjectives.csv`、`others.csv`
-  - 导出/生成时间：2026-10-01
+## Sources
 
-- 按施工单原计划，首选 OpenRussian TogetherDB 在线库按 level 筛选 A1+A2；
-  实测 TogetherDB 需登录、无法匿名导出，故改用上述仓库 CSV，
-  按各文件内的顺序（近似词频）取高频词，凑足约 1300 词。
+- Headwords, stress, part of speech, gender and English glosses come from the
+  **OpenRussian** project:
+  - Repository: https://github.com/Badestrand/russian-dictionary
+  - License: **CC BY-SA 4.0** (Creative Commons Attribution-ShareAlike 4.0 International)
+  - Files used: `nouns.csv`, `verbs.csv`, `adjectives.csv`, `others.csv`
+  - Export/generation date: 2026-10-01
 
-## 构成
+- Per the original plan, the OpenRussian TogetherDB online database was the
+  first choice for filtering A1+A2 by level. It requires login and cannot be
+  exported anonymously, so the repository CSVs above were used instead.
+  High-frequency words were taken in file order (an approximation of word
+  frequency) to reach about 1300 words.
 
-- 共 **1300 词**：名词 649、动词 286（含个别在 OR 中归入 verbs 的功能词）、
-  形容词 196（含在 OR 中归入 adjectives 的限定/物主代词等）、其它 169。
-  其中 рада（"高兴"）在 OR nouns.csv 中被归为名词，实为形容词 рад 的阴性
-  形式，已改归形容词类，故名词为 649、形容词为 196。
-- 重音：统一采用 OpenRussian `accented` 字段，以 `'` 标在重读元音之后；
-  单音节词、含 ё 的词按 OpenRussian 惯例不标重音。
-- 少数 OpenRussian 漏标、同形词错位、gender 字段缺失的情况，
-  由词库构建脚本（选词/分类阶段）中的 FORCE / GENDER_MANUAL 表修正，
-  并逐条登记在 `review.tsv`。
+## Composition
 
-## 中文释义声明
+- **1300 words** in total: 649 nouns, 286 verbs (including a few function words
+  classified as verbs in OpenRussian), 196 adjectives (including determiners and
+  possessive forms classified as adjectives in OpenRussian), and 169 others.
+  In OpenRussian `nouns.csv`, рада ("glad") is listed as a noun, but it is
+  actually the feminine form of the adjective рад; it was moved to the
+  adjective class, giving 649 nouns and 196 adjectives.
+- Stress: the OpenRussian `accented` field is used throughout, with `'` placed
+  after the stressed vowel. Monosyllabic words and words containing ё follow
+  the OpenRussian convention of carrying no stress mark.
+- A small number of missing stress marks, misaligned homographs and absent
+  gender fields are corrected by the FORCE / GENDER_MANUAL tables in the
+  vocabulary build script (selection/classification stage), and each fix is
+  recorded in `review.tsv`.
 
-- **所有中文释义为机器翻译/AI 生成，未经人工校对**，仅供学习参考；
-  短释义（选项用）在词表内唯一，完整释义见 `details.tsv`。
-- 如发现译法有误，以 OpenRussian 原文及权威词典为准。
+## Chinese Glosses
 
-## 署名与衍生
+- **All Chinese glosses are machine/AI generated and not human proofread**;
+  they are for study reference only. The short glosses (used for options) are
+  unique within the word list; full glosses are in `details.tsv`.
+- If a translation seems wrong, the OpenRussian source and authoritative
+  dictionaries take precedence.
 
-- 本词库是 OpenRussian（CC BY-SA 4.0）的衍生作品，依该许可同样以
-  CC BY-SA 4.0 发布；再分发时须保留本来源说明并署名 OpenRussian 贡献者。
-- 语音由 macOS `say -v Milena`（ru_RU）合成，经 ffmpeg 处理，
-  以 12 kHz 采样、编码为 IMA-ADPCM（1300 词 16 kHz 会超出 7.8MB 合并镜像
-  上限，按施工单预案降为 12 kHz）；语音版权依其各自合成引擎条款。
+## Attribution and Derivative Work
+
+- This vocabulary is a derivative work of OpenRussian (CC BY-SA 4.0) and is
+  released under the same CC BY-SA 4.0 license. When redistributing, keep this
+  source notice and credit the OpenRussian contributors.
+- Audio is synthesized with macOS `say -v Milena` (ru_RU) and processed with
+  ffmpeg, sampled at 12 kHz and encoded as IMA-ADPCM. At 16 kHz the 1300 words
+  would exceed the 7.8 MB merged-image limit, so the rate was lowered to 12 kHz
+  as provided for in the work order. Audio copyright follows the terms of the
+  respective synthesis engine.
