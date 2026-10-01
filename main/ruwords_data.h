@@ -23,9 +23,4 @@ extern const char *const RUW_CATEGORIES[];
 
 #define RUW_AUDIO_RATE 12000
 
-// 名词性别(与 gen_assets.py 的 GENDER_CODE 一致)
-#define RUW_GENDER_M    0   // 阳性
-#define RUW_GENDER_F    1   // 阴性
-#define RUW_GENDER_N    2   // 中性
-#define RUW_GENDER_PL   3   // 只有复数
-#define RUW_GENDER_NONE 255 // 非名词
+// 性别编码 RUW_GENDER_* 定义在 ruwords_logic.h。

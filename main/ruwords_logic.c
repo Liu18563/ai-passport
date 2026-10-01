@@ -164,3 +164,57 @@ void ruw_question_make(ruw_question_t *q, uint16_t target, uint16_t count,
     for (uint8_t i = 0; i < RUW_OPTIONS; i++)
         if (q->word[i] == target) q->answer = i;
 }
+
+// 取 UTF-8 字符串最后一个 Unicode 码点。
+static uint32_t last_codepoint(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    uint32_t cp = 0;
+    while (*p) {
+        unsigned char c = *p;
+        if (c < 0x80) { cp = c; p++; }
+        else if (c < 0xE0) { cp = ((c & 0x1Fu) << 6) | (p[1] & 0x3Fu); p += 2; }
+        else if (c < 0xF0) {
+            cp = ((c & 0x0Fu) << 10) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+            p += 3;
+        } else {
+            cp = ((c & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12)
+               | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+            p += 4;
+        }
+    }
+    return cp;
+}
+
+const char *ruw_gender_hint(const char *ru, uint8_t gender) {
+    if (gender == RUW_GENDER_PL) return "只有复数形式";
+
+    const uint32_t A = 0x0430, YA = 0x044F, O = 0x043E, E = 0x0435, YO = 0x0451,
+                   SOFT = 0x044C, Y = 0x0439, I = 0x0438, YERY = 0x044B;
+    uint32_t c = last_codepoint(ru);
+
+    if (c == SOFT) return "以-ь结尾，阳、阴性都有，需单独记";
+    if (c == A || c == YA) {
+        if (gender == RUW_GENDER_M) return "例外：以-а/-я结尾，但该词是阳性";
+        if (gender == RUW_GENDER_N) return "例外：以-а/-я结尾，但该词是中性（特殊词）";
+        return "以-а/-я结尾，通常阴性";
+    }
+    if (c == O || c == E || c == YO) {
+        if (gender == RUW_GENDER_M) return "例外：以-о/-е/-ё结尾，但该词是阳性";
+        if (gender == RUW_GENDER_F) return "例外：以-о/-е/-ё结尾，但该词是阴性";
+        return "以-о/-е/-ё结尾，通常中性";
+    }
+    if (c == I) {
+        if (gender == RUW_GENDER_N) return "例外：以-и结尾的外来词，通常中性";
+        if (gender == RUW_GENDER_M) return "例外：以-и结尾，但该词是阳性";
+        return "例外：以-и结尾，需单独记";
+    }
+    if (c == YERY) {
+        if (gender == RUW_GENDER_M) return "例外：以-ы结尾，但该词是阳性（有单数形式）";
+        return "例外：以-ы结尾，需单独记";
+    }
+    // 辅音或 -й 结尾。
+    if (gender == RUW_GENDER_F) return "例外：以辅音/-й结尾，但该词是阴性";
+    if (gender == RUW_GENDER_N) return "例外：以辅音/-й结尾，但该词是中性";
+    if (c == Y) return "以-й结尾，通常阳性";
+    return "以辅音结尾，通常阳性";
+}

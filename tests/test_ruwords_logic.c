@@ -177,6 +177,52 @@ static void test_question_options(void) {
         for (int b = a + 1; b < RUW_OPTIONS; b++) assert(q.word[a] != q.word[b]);
 }
 
+// 阴阳中性判断提示:规律、例外、-ь、复数各至少一例。
+static void test_gender_hint(void) {
+    const char *h;
+    // 规律:辅音→阳性、-а→阴性、-о→中性、-й→阳性。
+    h = ruw_gender_hint("стол", RUW_GENDER_M);
+    assert(strstr(h, "阳性") && !strstr(h, "例外"));
+    h = ruw_gender_hint("книга", RUW_GENDER_F);
+    assert(strstr(h, "阴性") && !strstr(h, "例外"));
+    h = ruw_gender_hint("письмо", RUW_GENDER_N);
+    assert(strstr(h, "中性") && !strstr(h, "例外"));
+    h = ruw_gender_hint("музей", RUW_GENDER_M);
+    assert(strstr(h, "阳性") && !strstr(h, "例外"));
+    // -ь 结尾阳阴都有。
+    h = ruw_gender_hint("дождь", RUW_GENDER_M);
+    assert(strstr(h, "-ь"));
+    h = ruw_gender_hint("тетрадь", RUW_GENDER_F);
+    assert(strstr(h, "-ь"));
+    // 例外:папа(-а但阳性)、кофе(-е但阳性)、время(-я但中性)、такси(-и但中性)。
+    assert(strstr(ruw_gender_hint("папа", RUW_GENDER_M), "例外"));
+    assert(strstr(ruw_gender_hint("кофе", RUW_GENDER_M), "例外"));
+    assert(strstr(ruw_gender_hint("время", RUW_GENDER_N), "例外"));
+    assert(strstr(ruw_gender_hint("такси", RUW_GENDER_N), "例外"));
+    // 只有复数。
+    h = ruw_gender_hint("деньги", RUW_GENDER_PL);
+    assert(strstr(h, "复数") && !strstr(h, "例外"));
+}
+
+// 性别模式:只考名词(范围掩码),全 DONE 后返回 0;与词义 progress 独立。
+static void test_gender_mode_flow(void) {
+    static uint8_t gst[N];
+    static uint16_t gseen[N];
+    ruw_progress_t gp = { .count = N, .level = 0, .stage = gst, .last_seen = gseen };
+    ruw_progress_reset(&gp);
+
+    uint8_t nouns[N] = {0};
+    for (int i = 0; i < 10; i++) nouns[i] = 1;  // 只有词0..9 是名词
+
+    ruw_session_t s;
+    assert(ruw_session_build(&s, &gp, nouns) == 10);
+    for (uint8_t i = 0; i < s.len; i++) assert(nouns[s.queue[i]]);
+    while (ruw_session_answer(&s, &gp, true)) {}
+    ruw_session_finish(&gp);
+    assert(ruw_count_mastered(&gp) == 10);
+    assert(ruw_session_build(&s, &gp, nouns) == 0);  // 名词全 DONE
+}
+
 static void test_adpcm_decode(void) {
     ruw_adpcm_t st;
     ruw_adpcm_init(&st);
@@ -203,6 +249,8 @@ int main(void) {
     test_filtered_requeue_in_range();
     test_counts();
     test_question_options();
+    test_gender_hint();
+    test_gender_mode_flow();
     test_adpcm_decode();
     return 0;
 }

@@ -16,6 +16,13 @@
 #define RUW_SESSION_CAP  20  // 队列容量(含答错重排)
 #define RUW_OPTIONS      4
 
+// 名词性别编码(与 gen_assets.py 的 GENDER_CODE 一致;非名词为 NONE)。
+#define RUW_GENDER_M    0   // 阳性
+#define RUW_GENDER_F    1   // 阴性
+#define RUW_GENDER_N    2   // 中性
+#define RUW_GENDER_PL   3   // 只有复数
+#define RUW_GENDER_NONE 255
+
 typedef struct {
     uint16_t count;              // 词数
     uint16_t level;              // 已打完的关数
@@ -66,3 +73,7 @@ void ruw_session_finish(ruw_progress_t *p);
 // seed 由调用方提供(xorshift),同一 seed 结果确定,便于测试。
 void ruw_question_make(ruw_question_t *q, uint16_t target, uint16_t count,
                        const uint8_t *category, uint32_t *seed);
+
+// 阴阳中性:根据词尾与实际性别生成「判断提示」。
+// gender 取 RUW_GENDER_*;pl 返回「只有复数形式」。
+const char *ruw_gender_hint(const char *ru, uint8_t gender);
