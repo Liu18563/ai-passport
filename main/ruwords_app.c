@@ -968,10 +968,6 @@ static void draw_answer_detail(void) {
     if (s_ans_card) lv_obj_delete(s_ans_card);
     s_ans_card = box(s_scr, 16, 152, 208, 136, s_ans_ok ? COL_OK_BG : COL_BAD_BG, 14);
 
-    lv_obj_t *pg = label(s_ans_card, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(pg, "%u/2", s_example_page + 1);
-    lv_obj_set_pos(pg, 176, 8);
-
     if (s_example_page == 0) {
         lv_obj_t *verdict = label(s_ans_card, &ruw_font_20, s_ans_ok ? COL_OK : COL_ACCENT,
                                   s_ans_ok ? "答对了！" : "答错了，已加入错题本");
@@ -1008,16 +1004,17 @@ static void draw_answer_detail(void) {
             lv_obj_set_pos(mine, 12, 100);
         }
     } else {
-        // 第 2 页:俄语例句 + 中文翻译,宽 184 自动换行,间隔 6px。
+        // 第 2 页:俄语例句 (12,6) 宽 184 自动换行;中文紧贴其下,宽 184 换行。
+        // ruw_font_20 行高 25,合计最多 5 行,底边不超过卡片内 131。
         lv_obj_t *eru = label(s_ans_card, &ruw_font_20, COL_INK, w->example_ru);
         lv_obj_set_width(eru, 184);
         lv_label_set_long_mode(eru, LV_LABEL_LONG_WRAP);
-        lv_obj_set_pos(eru, 12, 18);
+        lv_obj_set_pos(eru, 12, 6);
 
         lv_obj_t *ezh = label(s_ans_card, &ruw_font_20, COL_MUTED, w->example_zh);
         lv_obj_set_width(ezh, 184);
         lv_label_set_long_mode(ezh, LV_LABEL_LONG_WRAP);
-        lv_obj_set_pos(ezh, 12, 92);
+        lv_obj_align_to(ezh, eru, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 2);
     }
 }
 
@@ -1047,7 +1044,7 @@ static void submit_answer(void) {
         create_ru_block(s_hear_prompt, &RUW_WORDS[target]);
     }
 
-    lv_label_set_text(s_hint, "▼翻页 ▲重听 ●下一题");
+    lv_label_set_text(s_hint, "▼例句 ▲重听 ●下一题");
     show_answer_detail(ok);
     play_word(target);
 }
@@ -1260,8 +1257,10 @@ static void quiz_input(const input_event_t *in) {
             else show_done();
         } else if (in->btn == BSP_BTN_UP) {
             play_word(current_word());      // ▲ 重听
-        } else {  // DOWN: ▼ 翻到释义/例句页
+        } else {  // DOWN: ▼ 翻到释义/例句页,提示条告诉用户下一页去哪
             s_example_page ^= 1;
+            lv_label_set_text(s_hint, s_example_page ? "▼释义 ▲重听 ●下一题"
+                                                     : "▼例句 ▲重听 ●下一题");
             draw_answer_detail();
         }
     } else if (in->btn == BSP_BTN_UP) {
