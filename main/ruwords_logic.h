@@ -107,3 +107,8 @@ uint8_t ruw_migrate_stage(uint8_t old_level, uint8_t old_wrong);
 void ruw_migrate_v2(uint8_t *out_stage, uint16_t new_count,
                     const uint16_t *map, uint16_t old_count,
                     const uint8_t *old_level, const uint8_t *old_wrong);
+
+// 开机动画时间线:返回某时刻应显示的 Logo 帧。
+// 0=r0(0°) 1=r5 2=r10 3=r15(静止) 4=blink(闭眼)。
+// 0-300ms 逐帧歪头,300-500ms 停在 r15,500-620ms 眨眼,其后静止 r15。
+uint8_t ruw_intro_frame_at(uint32_t ms);

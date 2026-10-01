@@ -40,7 +40,11 @@ LV_FONT_DECLARE(ruw_font_20);
 LV_FONT_DECLARE(ruw_font_28);
 LV_FONT_DECLARE(ruw_font_36);
 LV_FONT_DECLARE(ruw_font_48);
-LV_IMAGE_DECLARE(ruw_logo);
+LV_IMAGE_DECLARE(ruw_logo_r0);
+LV_IMAGE_DECLARE(ruw_logo_r5);
+LV_IMAGE_DECLARE(ruw_logo_r10);
+LV_IMAGE_DECLARE(ruw_logo_r15);
+LV_IMAGE_DECLARE(ruw_logo_blink);
 
 extern const uint8_t s_voice_start[] asm("_binary_ruwords_voice_adpcm_start");
 extern const uint8_t s_voice_end[] asm("_binary_ruwords_voice_adpcm_end");
@@ -129,6 +133,17 @@ static lv_obj_t *s_hear_prompt;   // 听音模式:作答前的大"听"提示区(
 static bool s_ans_ok;             // 作答卡分页:本轮答对/错
 static uint8_t s_example_page;    // 作答卡分页:0=释义,1=例句
 static lv_obj_t *s_ans_card;      // 作答详情卡(翻页时重建)
+
+// 首页 Logo / 开机动画 / 眨眼。
+static lv_obj_t *s_home_logo;
+static lv_obj_t *s_home_title;    // 应用名「SamL」
+static lv_obj_t *s_home_sub;      // 副标题
+static lv_timer_t *s_intro_timer;
+static lv_timer_t *s_blink_timer;
+static bool s_intro_played;
+static int64_t s_intro_start_ms;
+static uint8_t s_intro_frame;
+static bool s_blink_on;           // 眨眼 timer 当前是否正显示闭眼帧
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -399,6 +414,9 @@ static void battery_refresh(void) {
 
 // 新建空白页:背景 + 右上角电量。旧页面在此删除。
 static lv_obj_t *page_begin(page_t page) {
+    // 换屏前先停首页的动画/眨眼 timer,防止回调访问已删除对象。
+    if (s_intro_timer) { lv_timer_delete(s_intro_timer); s_intro_timer = NULL; }
+    if (s_blink_timer) { lv_timer_delete(s_blink_timer); s_blink_timer = NULL; }
     s_page = page;
     lv_obj_t *old = s_scr;
     s_scr = lv_obj_create(NULL);
@@ -460,24 +478,159 @@ static void continue_challenge(void) {
     show_category();
 }
 
+static const lv_image_dsc_t *const LOGO_FRAMES[5] = {
+    &ruw_logo_r0, &ruw_logo_r5, &ruw_logo_r10, &ruw_logo_r15, &ruw_logo_blink,
+};
+
+// 位移动画回调:把 anim 值写到对象 y。
+static void anim_y_cb(void *var, int32_t v) { lv_obj_set_y(var, v); }
+// 淡入动画回调:把 anim 值写到对象不透明度。
+static void anim_opa_cb(void *var, int32_t v) {
+    lv_obj_set_style_opa(var, v, 0);
+}
+
+// 首页最终版面:Logo(76,14)、SamL 居中 y=102、副标题 y=148、菜单 y=180。
+static void home_finish_layout(void) {
+    lv_image_set_src(s_home_logo, &ruw_logo_r15);
+    lv_obj_set_pos(s_home_logo, 76, 14);
+    lv_obj_set_y(s_home_title, 102);
+    lv_obj_set_y(s_home_sub, 148);
+    lv_obj_set_style_opa(s_home_title, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(s_home_sub, LV_OPA_COVER, 0);
+    for (uint8_t i = 0; i < s_row_count; i++) {
+        lv_obj_set_style_opa(s_rows[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_opa(s_row_labels[i], LV_OPA_COVER, 0);
+    }
+    if (s_battery) lv_obj_set_style_opa(s_battery, LV_OPA_COVER, 0);
+}
+
+// 眨眼 timer:显示 120ms 闭眼帧,再回静止帧,5-8 秒后再来一次。
+static void blink_timer_cb(lv_timer_t *t) {
+    if (s_screen_off) { lv_timer_set_period(t, 1000); return; }
+    if (!s_blink_on) {
+        lv_image_set_src(s_home_logo, &ruw_logo_blink);
+        s_blink_on = true;
+        lv_timer_set_period(t, 120);
+    } else {
+        lv_image_set_src(s_home_logo, &ruw_logo_r15);
+        s_blink_on = false;
+        lv_timer_set_period(t, 5000 + esp_random() % 3001);
+    }
+}
+
+static void home_blink_start(void) {
+    if (s_blink_timer) lv_timer_delete(s_blink_timer);
+    s_blink_on = false;
+    s_blink_timer = lv_timer_create(blink_timer_cb, 300, NULL);  // 进门 300ms 先眨一次
+}
+
+// 开机动画 timer:按纯时间线切 Logo 帧,到 1900ms 收尾。
+static void intro_timer_cb(lv_timer_t *t) {
+    uint32_t ms = (uint32_t)(now_ms() - s_intro_start_ms);
+    uint8_t f = ruw_intro_frame_at(ms);
+    if (f != s_intro_frame) {
+        s_intro_frame = f;
+        lv_image_set_src(s_home_logo, LOGO_FRAMES[f]);
+    }
+    if (ms >= 1900) {
+        lv_timer_delete(t);
+        s_intro_timer = NULL;
+        home_finish_layout();
+        s_intro_played = true;
+        home_blink_start();
+    }
+}
+
+// 开机第一次进首页:播放开机动画。
+static void home_play_intro(lv_obj_t *scr) {
+    (void)scr;
+    // 只显示 Logo 在屏幕正中 (76,116),其余元素透明。
+    lv_image_set_src(s_home_logo, &ruw_logo_r0);
+    lv_obj_set_pos(s_home_logo, 76, 116);
+    lv_obj_set_y(s_home_title, 212);
+    lv_obj_set_style_opa(s_home_title, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_home_sub, LV_OPA_TRANSP, 0);
+    for (uint8_t i = 0; i < s_row_count; i++) {
+        lv_obj_set_style_opa(s_rows[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_opa(s_row_labels[i], LV_OPA_TRANSP, 0);
+    }
+    if (s_battery) lv_obj_set_style_opa(s_battery, LV_OPA_TRANSP, 0);
+
+    // SamL 在 Logo 下方 y=212,700-1000ms 淡入。
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_home_title);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_time(&a, 300);
+    lv_anim_set_delay(&a, 700);
+    lv_anim_set_exec_cb(&a, anim_opa_cb);
+    lv_anim_start(&a);
+
+    // 1100-1500ms:Logo 与 SamL 一起上移到最终位置,ease_out。
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_home_logo);
+    lv_anim_set_values(&a, 116, 14);
+    lv_anim_set_time(&a, 400);
+    lv_anim_set_delay(&a, 1100);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, anim_y_cb);
+    lv_anim_start(&a);
+
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_home_title);
+    lv_anim_set_values(&a, 212, 102);
+    lv_anim_set_time(&a, 400);
+    lv_anim_set_delay(&a, 1100);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, anim_y_cb);
+    lv_anim_start(&a);
+
+    // 1500-1900ms:副标题、菜单、电量淡入。
+    lv_obj_t *fade_objs[8];
+    fade_objs[0] = s_home_sub;
+    uint8_t n = 1;
+    for (uint8_t i = 0; i < s_row_count; i++) {
+        fade_objs[n++] = s_rows[i];
+        fade_objs[n++] = s_row_labels[i];
+    }
+    if (s_battery) fade_objs[n++] = s_battery;
+    for (uint8_t i = 0; i < n; i++) {
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, fade_objs[i]);
+        lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+        lv_anim_set_time(&a, 400);
+        lv_anim_set_delay(&a, 1500);
+        lv_anim_set_exec_cb(&a, anim_opa_cb);
+        lv_anim_start(&a);
+    }
+
+    s_intro_frame = 255;
+    s_intro_start_ms = now_ms();
+    s_intro_timer = lv_timer_create(intro_timer_cb, 30, NULL);
+}
+
 static void show_home(void) {
     lv_obj_t *scr = page_begin(PAGE_HOME);
-    // 96x96 Logo 居中于 (72,22),标题在 y=122。
-    lv_obj_t *logo = lv_image_create(scr);
-    lv_image_set_src(logo, &ruw_logo);
-    lv_obj_set_pos(logo, 72, 22);
 
-    lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, "俄语单词斩");
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 122);
-    lv_obj_t *sub = label(scr, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(sub, "已掌握 %u/%u",
+    s_home_logo = lv_image_create(scr);
+    lv_obj_set_size(s_home_logo, 88, 88);
+
+    // 应用名「SamL」ruw_font_36 水平居中。
+    s_home_title = label(scr, &ruw_font_36, COL_INK, "SamL");
+    lv_obj_align(s_home_title, LV_ALIGN_TOP_MID, 0, 102);
+
+    s_home_sub = label(scr, &ruw_font_20, COL_MUTED, "");
+    lv_label_set_text_fmt(s_home_sub, "俄语单词斩 · %u/%u",
                           ruw_count_mastered(&s_progress), RUW_WORD_COUNT);
-    lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 148);
+    lv_obj_align(s_home_sub, LV_ALIGN_TOP_MID, 0, 148);
 
     // 3 行菜单:首行 y=180,行距 42,行高 36。
     for (int r = 0; r < HOME_VISIBLE; r++) list_row(scr, 180 + r * 42, 36, "", true);
     home_rows_text();
     list_select(s_home_cursor);
+
+    if (!s_intro_played) home_play_intro(scr);
+    else home_blink_start();
 }
 
 // ---------------------------------------------------------------- 二级:分类页
@@ -929,6 +1082,23 @@ static void category_input(const input_event_t *in) {
 
 // 首页输入:上/下循环;确定进入;长按确定进设置。
 static void home_input(const input_event_t *in) {
+    // 开机动画进行中:任意键立即跳到最终版面,本次按键不触发菜单。
+    if (s_intro_timer) {
+        lv_timer_delete(s_intro_timer);
+        s_intro_timer = NULL;
+        lv_anim_delete(s_home_logo, NULL);
+        lv_anim_delete(s_home_title, NULL);
+        lv_anim_delete(s_home_sub, NULL);
+        if (s_battery) lv_anim_delete(s_battery, NULL);
+        for (uint8_t i = 0; i < s_row_count; i++) {
+            lv_anim_delete(s_rows[i], NULL);
+            lv_anim_delete(s_row_labels[i], NULL);
+        }
+        home_finish_layout();
+        s_intro_played = true;
+        home_blink_start();
+        return;
+    }
     if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
         show_settings();
         return;

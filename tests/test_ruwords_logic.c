@@ -387,6 +387,16 @@ static void test_session_snapshot_restores(void) {
     assert(r.correct == b.correct && r.wrong == b.wrong && r.len == b.len && r.pos == b.pos);
 }
 
+static void test_intro_frame(void) {
+    assert(ruw_intro_frame_at(0) == 0);     // r0
+    assert(ruw_intro_frame_at(150) == 1);   // r5
+    assert(ruw_intro_frame_at(250) == 2);   // r10
+    assert(ruw_intro_frame_at(400) == 3);   // r15
+    assert(ruw_intro_frame_at(550) == 4);   // blink
+    assert(ruw_intro_frame_at(700) == 3);   // r15
+    assert(ruw_intro_frame_at(3000) == 3);  // r15
+}
+
 int main(void) {
     test_stage_transitions();
     test_requeued_keeps_stage();
@@ -409,5 +419,6 @@ int main(void) {
     test_category_stats();
     test_session_valid();
     test_session_snapshot_restores();
+    test_intro_frame();
     return 0;
 }
