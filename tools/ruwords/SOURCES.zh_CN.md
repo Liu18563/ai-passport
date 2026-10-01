@@ -34,6 +34,21 @@
   短释义（选项用）在词表内唯一，完整释义见 `details.tsv`。
 - 如发现译法有误，以 OpenRussian 原文及权威词典为准。
 
+## 例句来源
+
+- 每个词配一句例句（`tools/ruwords/examples.csv` 的 `example_ru` + `example_zh` 列），
+  显示在作答卡第 2 页；例句只存文字，不做发音。
+- 三种来源（CSV `source` 列）：
+  - **`tatoeba-cmn`**：俄文、中文均来自 Tatoeba 直接互链句，中文由 Tatoeba 贡献者提供；
+    繁体译文经 OpenCC `t2s` 确定性转为简体，属格式改动。
+  - **`tatoeba-eng-mt`**：俄文来自 Tatoeba，英文来自其直接互链句；CSV 中的中文由
+    AI 根据英文译写，属**机器翻译**，并非 Tatoeba 的人工中文译文。
+  - **`generated`**：俄文例句与中文译文为自造，无 Tatoeba ID。
+- Tatoeba 句子许可以 **CC BY 2.0 FR**（https://creativecommons.org/licenses/by/2.0/fr/deed.zh-hans）
+  发布。再分发时须署名 **Tatoeba 及对应句子的贡献者**、注明许可与来源链接；
+  CSV 的 `tatoeba_ru_id`、`tatoeba_zh_id` 可拼成
+  `https://tatoeba.org/en/sentences/show/ID` 查阅句子及贡献者。
+
 ## 署名与衍生
 
 - 本词库是 OpenRussian（CC BY-SA 4.0）的衍生作品，依该许可同样以

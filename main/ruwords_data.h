@@ -16,6 +16,8 @@ typedef struct {
     uint8_t gender;          // 性别,见 RUW_GENDER_*; 非名词为 RUW_GENDER_NONE
     uint32_t audio_offset;   // 在 ADPCM blob 中的字节偏移
     uint32_t audio_samples;  // 12 kHz 采样数(每字节两个采样)
+    const char *example_ru;  // 俄语例句(无发音)
+    const char *example_zh;  // 例句中文翻译
 } ruw_word_t;
 
 extern const ruw_word_t RUW_WORDS[RUW_WORD_COUNT];

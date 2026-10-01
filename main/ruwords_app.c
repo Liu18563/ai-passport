@@ -126,6 +126,9 @@ static lv_obj_t *s_row_labels[RUW_CATEGORY_COUNT + 1];
 static uint8_t s_row_count;
 static lv_obj_t *s_hint;
 static lv_obj_t *s_hear_prompt;   // 听音模式:作答前的大"听"提示区(作答后删除)
+static bool s_ans_ok;             // 作答卡分页:本轮答对/错
+static uint8_t s_example_page;    // 作答卡分页:0=释义,1=例句
+static lv_obj_t *s_ans_card;      // 作答详情卡(翻页时重建)
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -689,6 +692,8 @@ static void show_question(void) {
     s_answered = false;
     s_selected = 0;
     s_hear_prompt = NULL;
+    s_example_page = 0;
+    s_ans_card = NULL;   // page_begin 整屏重建,旧卡指针作废
     uint16_t target = s_session.queue[s_session.pos];
     bool gender_mode = s_mode == MODE_GENDER;
 
@@ -745,49 +750,73 @@ static void show_question(void) {
     play_word(target);
 }
 
-// 作答后:选项区换成详情卡。词义模式显示词性+完整释义;
-// 性别模式显示 ruw_gender_hint 的判断提示。
-static void show_answer_detail(bool ok) {
+// 作答后详情卡,分两页:0=词性+完整释义,1=俄语例句+中文翻译。
+// 翻页(s_example_page)时整卡重建;卡片 y=152,高 136,底边 288。
+static void draw_answer_detail(void) {
     bool gender_mode = s_mode == MODE_GENDER;
     uint16_t target = current_word();
     const ruw_word_t *w = &RUW_WORDS[target];
-    for (int i = 0; i < s_row_count; i++) lv_obj_add_flag(s_rows[i], LV_OBJ_FLAG_HIDDEN);
+    if (s_ans_card) lv_obj_delete(s_ans_card);
+    s_ans_card = box(s_scr, 16, 152, 208, 136, s_ans_ok ? COL_OK_BG : COL_BAD_BG, 14);
 
-    lv_obj_t *card = box(s_scr, 16, 152, 208, 130, ok ? COL_OK_BG : COL_BAD_BG, 14);
-    lv_obj_t *verdict = label(card, &ruw_font_20, ok ? COL_OK : COL_ACCENT,
-                              ok ? "答对了！" : "答错了，已加入错题本");
-    lv_obj_set_pos(verdict, 12, 8);
+    lv_obj_t *pg = label(s_ans_card, &ruw_font_20, COL_MUTED, "");
+    lv_label_set_text_fmt(pg, "%u/2", s_example_page + 1);
+    lv_obj_set_pos(pg, 176, 8);
 
-    if (gender_mode) {
-        const char *hint = ruw_gender_hint(w->ru, w->gender);
-        lv_obj_t *h = label(card, &ruw_font_20, COL_INK, hint);
-        lv_obj_set_width(h, 184);
-        lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
-        lv_obj_set_pos(h, 12, 36);
+    if (s_example_page == 0) {
+        lv_obj_t *verdict = label(s_ans_card, &ruw_font_20, s_ans_ok ? COL_OK : COL_ACCENT,
+                                  s_ans_ok ? "答对了！" : "答错了，已加入错题本");
+        lv_obj_set_pos(verdict, 12, 8);
+
+        if (gender_mode) {
+            const char *hint = ruw_gender_hint(w->ru, w->gender);
+            lv_obj_t *h = label(s_ans_card, &ruw_font_20, COL_INK, hint);
+            lv_obj_set_width(h, 184);
+            lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+            lv_obj_set_pos(h, 12, 36);
+        } else {
+            lv_obj_t *pos = label(s_ans_card, &ruw_font_20, COL_MUTED, w->pos);
+            lv_obj_set_pos(pos, 12, 36);
+
+            lv_obj_t *full = label(s_ans_card, &ruw_font_20, COL_INK, w->full);
+            lv_obj_set_width(full, 184);
+            lv_label_set_long_mode(full, LV_LABEL_LONG_WRAP);
+            lv_obj_set_pos(full, 12, 62);
+        }
+
+        if (!s_ans_ok) {
+            static const char *const GENDER_OPT[RUW_OPTIONS] = {
+                "阳性", "阴性", "中性", "只有复数",
+            };
+            lv_obj_t *mine = label(s_ans_card, &ruw_font_20, COL_MUTED, "");
+            if (gender_mode)
+                lv_label_set_text_fmt(mine, "你选了：%s", GENDER_OPT[s_selected]);
+            else
+                lv_label_set_text_fmt(mine, "你选了：%s",
+                                      RUW_WORDS[s_question.word[s_selected]].zh);
+            lv_label_set_long_mode(mine, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(mine, 184);
+            lv_obj_set_pos(mine, 12, 100);
+        }
     } else {
-        lv_obj_t *pos = label(card, &ruw_font_20, COL_MUTED, w->pos);
-        lv_obj_set_pos(pos, 12, 36);
+        // 第 2 页:俄语例句 + 中文翻译,宽 184 自动换行,间隔 6px。
+        lv_obj_t *eru = label(s_ans_card, &ruw_font_20, COL_INK, w->example_ru);
+        lv_obj_set_width(eru, 184);
+        lv_label_set_long_mode(eru, LV_LABEL_LONG_WRAP);
+        lv_obj_set_pos(eru, 12, 18);
 
-        lv_obj_t *full = label(card, &ruw_font_20, COL_INK, w->full);
-        lv_obj_set_width(full, 184);
-        lv_label_set_long_mode(full, LV_LABEL_LONG_WRAP);
-        lv_obj_set_pos(full, 12, 62);
+        lv_obj_t *ezh = label(s_ans_card, &ruw_font_20, COL_MUTED, w->example_zh);
+        lv_obj_set_width(ezh, 184);
+        lv_label_set_long_mode(ezh, LV_LABEL_LONG_WRAP);
+        lv_obj_set_pos(ezh, 12, 92);
     }
+}
 
-    if (!ok) {
-        static const char *const GENDER_OPT[RUW_OPTIONS] = {
-            "阳性", "阴性", "中性", "只有复数",
-        };
-        lv_obj_t *mine = label(card, &ruw_font_20, COL_MUTED, "");
-        if (gender_mode)
-            lv_label_set_text_fmt(mine, "你选了：%s", GENDER_OPT[s_selected]);
-        else
-            lv_label_set_text_fmt(mine, "你选了：%s",
-                                  RUW_WORDS[s_question.word[s_selected]].zh);
-        lv_label_set_long_mode(mine, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(mine, 184);
-        lv_obj_set_pos(mine, 12, 100);
-    }
+static void show_answer_detail(bool ok) {
+    s_ans_ok = ok;
+    s_example_page = 0;
+    for (int i = 0; i < s_row_count; i++) lv_obj_add_flag(s_rows[i], LV_OBJ_FLAG_HIDDEN);
+    draw_answer_detail();
 }
 
 static void submit_answer(void) {
@@ -809,7 +838,7 @@ static void submit_answer(void) {
         create_ru_block(s_hear_prompt, &RUW_WORDS[target]);
     }
 
-    lv_label_set_text(s_hint, "▲▼ 重听 · ● 下一题");
+    lv_label_set_text(s_hint, "▼翻页 ▲重听 ●下一题");
     show_answer_detail(ok);
     play_word(target);
 }
@@ -1003,8 +1032,11 @@ static void quiz_input(const input_event_t *in) {
         if (in->btn == BSP_BTN_OK) {
             if (s_session.pos < s_session.len) show_question();
             else show_done();
-        } else {
-            play_word(current_word());
+        } else if (in->btn == BSP_BTN_UP) {
+            play_word(current_word());      // ▲ 重听
+        } else {  // DOWN: ▼ 翻到释义/例句页
+            s_example_page ^= 1;
+            draw_answer_detail();
         }
     } else if (in->btn == BSP_BTN_UP) {
         s_selected = (uint8_t)((s_selected + RUW_OPTIONS - 1) % RUW_OPTIONS);

@@ -43,6 +43,25 @@
 - If a translation seems wrong, the OpenRussian source and authoritative
   dictionaries take precedence.
 
+## Example Sentences
+
+- Each word carries one example sentence (`tools/ruwords/examples.csv`, column
+  `example_ru` + `example_zh`), shown on page 2 of the answer card. Sentences are
+  text only — no audio is generated for them.
+- Three source kinds (CSV `source` column):
+  - **`tatoeba-cmn`** — Russian and Chinese both come from directly linked Tatoeba
+    sentences; the Chinese is contributed by Tatoeba users. Traditional characters
+    were converted to Simplified deterministically (OpenCC `t2s`), a formatting change.
+  - **`tatoeba-eng-mt`** — Russian from Tatoeba, English from a directly linked Tatoeba
+    sentence; the Chinese here is an AI machine translation of the English, **not** a
+    Tatoeba human Chinese translation.
+  - **`generated`** — both Russian and sentence Chinese written by us, no Tatoeba ID.
+- Tatoeba sentences are licensed under **CC BY 2.0 FR**
+  (https://creativecommons.org/licenses/by/2.0/fr/deed.en). When redistributing, credit
+  **Tatoeba and the individual sentence contributors** with the license and source links;
+  the CSV `tatoeba_ru_id` / `tatoeba_zh_id` form
+  `https://tatoeba.org/en/sentences/show/ID` to look up each sentence and its author.
+
 ## Attribution and Derivative Work
 
 - This vocabulary is a derivative work of OpenRussian (CC BY-SA 4.0) and is
