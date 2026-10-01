@@ -223,6 +223,65 @@ static void test_gender_mode_flow(void) {
     assert(ruw_session_build(&s, &gp, nouns) == 0);  // 名词全 DONE
 }
 
+// v2 单状态迁移:wrong>0→WRONG2;level>0→DONE;其余 NEW。
+static void test_migrate_stage(void) {
+    assert(ruw_migrate_stage(1, 0) == RUW_STAGE_DONE);
+    assert(ruw_migrate_stage(3, 0) == RUW_STAGE_DONE);
+    assert(ruw_migrate_stage(0, 1) == RUW_STAGE_WRONG2);
+    assert(ruw_migrate_stage(2, 1) == RUW_STAGE_WRONG2);  // wrong 优先
+    assert(ruw_migrate_stage(0, 0) == RUW_STAGE_NEW);
+}
+
+// v2→v3:词表重排后按原文映射(旧下标→新下标),三种结果 + 未匹配新词保持 NEW。
+static void test_migrate_v2(void) {
+    enum { NEW_C = 8, OLD_C = 5 };
+    // 旧词顺序与新词不同:旧0→新5,旧1→新2,旧2→新7,旧3→新0,旧4→新3。
+    const uint16_t map[OLD_C] = { 5, 2, 7, 0, 3 };
+    const uint8_t old_level[OLD_C] = { 1, 0, 0, 2, 0 };
+    const uint8_t old_wrong[OLD_C] = { 0, 1, 0, 0, 3 };
+    uint8_t out[NEW_C];
+    ruw_migrate_v2(out, NEW_C, map, OLD_C, old_level, old_wrong);
+    // 旧0→新5 DONE;旧1→新2 WRONG2;旧2→新7 NEW;旧3→新0 DONE;旧4→新3 WRONG2。
+    assert(out[0] == RUW_STAGE_DONE);
+    assert(out[1] == RUW_STAGE_NEW);   // 未匹配新词
+    assert(out[2] == RUW_STAGE_WRONG2);
+    assert(out[3] == RUW_STAGE_WRONG2);
+    assert(out[4] == RUW_STAGE_NEW);   // 未匹配新词
+    assert(out[5] == RUW_STAGE_DONE);
+    assert(out[6] == RUW_STAGE_NEW);   // 未匹配新词
+    assert(out[7] == RUW_STAGE_NEW);
+}
+
+// 1300 词规模:每个词都能生成 4 个不重复、唯一正确的选项。
+static void test_question_large_scale(void) {
+    const uint16_t M = 1300;
+    static uint8_t cat[1300];
+    for (uint16_t i = 0; i < M; i++) cat[i] = (uint8_t)(i % 18);
+    uint32_t seed = 0xABCD;
+    for (uint16_t t = 0; t < M; t++) {
+        ruw_question_t q;
+        ruw_question_make(&q, t, M, cat, &seed);
+        assert(q.answer < RUW_OPTIONS);
+        assert(q.word[q.answer] == t);          // 唯一正确
+        for (int a = 0; a < RUW_OPTIONS; a++) {
+            assert(q.word[a] < M);
+            assert(cat[q.word[a]] == cat[t]);   // 每类约72词,全部同类
+            for (int b = a + 1; b < RUW_OPTIONS; b++)
+                assert(q.word[a] != q.word[b]); // 不重复
+        }
+    }
+    // 极端:某类只有 1 个词,其余全不同类,仍能跨类补齐 4 个不重复选项。
+    static uint8_t cat2[1300];
+    memset(cat2, 0, sizeof(cat2));
+    for (uint16_t i = 1; i < M; i++) cat2[i] = (uint8_t)(i % 17) + 1;
+    ruw_question_t q;
+    ruw_question_make(&q, 0, M, cat2, &seed);
+    assert(q.word[q.answer] == 0);
+    for (int a = 0; a < RUW_OPTIONS; a++)
+        for (int b = a + 1; b < RUW_OPTIONS; b++)
+            assert(q.word[a] != q.word[b]);
+}
+
 static void test_adpcm_decode(void) {
     ruw_adpcm_t st;
     ruw_adpcm_init(&st);
@@ -251,6 +310,9 @@ int main(void) {
     test_question_options();
     test_gender_hint();
     test_gender_mode_flow();
+    test_migrate_stage();
+    test_migrate_v2();
+    test_question_large_scale();
     test_adpcm_decode();
     return 0;
 }
