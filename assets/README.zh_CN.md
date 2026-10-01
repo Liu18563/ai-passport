@@ -46,6 +46,6 @@
 | --- | --- |
 | `fonts/ruw_font_20.c` / `ruw_font_28.c` / `ruw_font_36.c` | Noto Sans SC（SIL OFL 1.1）经 lv_font_conv 1.5.2 转换，4 bpp 未压缩。20px 覆盖 `tools/ruwords/glyphs.txt` 全部字符，28/36px 仅 ASCII 与西里尔字母。再生成：`tools/ruwords/gen_fonts.sh <字体路径>` |
 | `music/ruwords_voice.adpcm` | 301 个单词的俄语读音，macOS `say -v Milena` 合成，ffmpeg 去首尾静音后转 16 kHz 单声道，再编码为 IMA-ADPCM 4 bit。再生成：`python3 tools/ruwords/gen_assets.py` |
-| `images/ruw_logo.c` | 96 × 96，RGB565，未压缩、无 alpha。像素风护耳毛帽（ушанка），以 32×32 字符矩阵绘制后 3 倍放大；原创图，无政治符号。再生成：`python3 tools/ruwords/gen_logo.py`（同时输出 `tools/ruwords/logo_preview.png` 预览） |
+| `images/ruw_logo.c` | 88 × 88，RGB565，未压缩、无 alpha。原创套娃 Logo 五帧：`ruw_logo_r0/r5/r10/r15`（逆时针旋转 0/5/10/15 度）与 `ruw_logo_blink`（15 度闭眼）；`ruw_logo` 为 `r15` 的兼容别名。源图 `images/source/matryoshka_source.png` 为原创，作者刘晓，AI 生成。再生成：`python3 tools/ruwords/gen_logo.py`（同时输出 `tools/ruwords/logo_preview.png` 预览） |
 
 macOS 系统语音的合成结果仅供个人学习使用，未确认可公开再分发；公开发布前应换用许可明确的 TTS 或真人录音。
