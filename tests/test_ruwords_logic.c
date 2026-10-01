@@ -388,13 +388,13 @@ static void test_session_snapshot_restores(void) {
 }
 
 static void test_intro_frame(void) {
-    assert(ruw_intro_frame_at(0) == 0);     // r0
-    assert(ruw_intro_frame_at(150) == 1);   // r5
-    assert(ruw_intro_frame_at(250) == 2);   // r10
-    assert(ruw_intro_frame_at(400) == 3);   // r15
-    assert(ruw_intro_frame_at(550) == 4);   // blink
-    assert(ruw_intro_frame_at(700) == 3);   // r15
-    assert(ruw_intro_frame_at(3000) == 3);  // r15
+    assert(ruw_intro_frame_at(0) == 0);
+    assert(ruw_intro_frame_at(RUW_INTRO_FRAME_MS - 1) == 0);
+    assert(ruw_intro_frame_at(RUW_INTRO_FRAME_MS) == 1);
+    assert(ruw_intro_frame_at(RUW_INTRO_FRAME_MS * 10) == RUW_LOGO_BLINK);
+    assert(ruw_intro_frame_at(RUW_INTRO_FRAME_MS * 11) == RUW_LOGO_REST);
+    assert(ruw_intro_frame_at(RUW_INTRO_FRAME_MS * RUW_LOGO_FRAMES) == RUW_LOGO_REST);
+    assert(ruw_intro_frame_at(60000) == RUW_LOGO_REST);
 }
 
 int main(void) {

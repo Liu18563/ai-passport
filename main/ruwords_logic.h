@@ -108,7 +108,13 @@ void ruw_migrate_v2(uint8_t *out_stage, uint16_t new_count,
                     const uint16_t *map, uint16_t old_count,
                     const uint8_t *old_level, const uint8_t *old_wrong);
 
-// 开机动画时间线:返回某时刻应显示的 Logo 帧。
-// 0=r0(0°) 1=r5 2=r10 3=r15(静止) 4=blink(闭眼)。
-// 0-300ms 逐帧歪头,300-500ms 停在 r15,500-620ms 眨眼,其后静止 r15。
+// 首页 Logo 帧动画(素材见 tools/ruwords/gen_logo.py):
+// f0-f3 探头滑入,f4-f7 歪头弹动,f8 睁眼,f9 半闭眼,f10 闭眼,f11 睁眼静止。
+#define RUW_LOGO_FRAMES     12
+#define RUW_LOGO_REST       11   // 首页常驻帧
+#define RUW_LOGO_HALF_BLINK 9
+#define RUW_LOGO_BLINK      10
+#define RUW_INTRO_FRAME_MS  90   // 开机动画每帧时长
+
+// 开机动画:返回某时刻应显示的 Logo 帧。12 帧依次播放,播完停在 RUW_LOGO_REST。
 uint8_t ruw_intro_frame_at(uint32_t ms);

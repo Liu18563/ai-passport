@@ -271,10 +271,6 @@ void ruw_migrate_v2(uint8_t *out_stage, uint16_t new_count,
 // ---------------------------------------------------------------- 开机动画时间线
 
 uint8_t ruw_intro_frame_at(uint32_t ms) {
-    if (ms < 100) return 0;   // r0
-    if (ms < 200) return 1;   // r5
-    if (ms < 300) return 2;   // r10
-    if (ms < 500) return 3;   // r15
-    if (ms < 620) return 4;   // blink
-    return 3;                 // 静止 r15
+    uint32_t f = ms / RUW_INTRO_FRAME_MS;
+    return f < RUW_LOGO_FRAMES ? (uint8_t)f : RUW_LOGO_REST;
 }

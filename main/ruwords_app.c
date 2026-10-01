@@ -40,11 +40,18 @@ LV_FONT_DECLARE(ruw_font_20);
 LV_FONT_DECLARE(ruw_font_28);
 LV_FONT_DECLARE(ruw_font_36);
 LV_FONT_DECLARE(ruw_font_48);
-LV_IMAGE_DECLARE(ruw_logo_r0);
-LV_IMAGE_DECLARE(ruw_logo_r5);
-LV_IMAGE_DECLARE(ruw_logo_r10);
-LV_IMAGE_DECLARE(ruw_logo_r15);
-LV_IMAGE_DECLARE(ruw_logo_blink);
+LV_IMAGE_DECLARE(ruw_logo_f0);
+LV_IMAGE_DECLARE(ruw_logo_f1);
+LV_IMAGE_DECLARE(ruw_logo_f2);
+LV_IMAGE_DECLARE(ruw_logo_f3);
+LV_IMAGE_DECLARE(ruw_logo_f4);
+LV_IMAGE_DECLARE(ruw_logo_f5);
+LV_IMAGE_DECLARE(ruw_logo_f6);
+LV_IMAGE_DECLARE(ruw_logo_f7);
+LV_IMAGE_DECLARE(ruw_logo_f8);
+LV_IMAGE_DECLARE(ruw_logo_f9);
+LV_IMAGE_DECLARE(ruw_logo_f10);
+LV_IMAGE_DECLARE(ruw_logo_f11);
 
 extern const uint8_t s_voice_start[] asm("_binary_ruwords_voice_adpcm_start");
 extern const uint8_t s_voice_end[] asm("_binary_ruwords_voice_adpcm_end");
@@ -143,7 +150,7 @@ static lv_timer_t *s_blink_timer;
 static bool s_intro_played;
 static int64_t s_intro_start_ms;
 static uint8_t s_intro_frame;
-static bool s_blink_on;           // 眨眼 timer 当前是否正显示闭眼帧
+static uint8_t s_blink_step;      // 眨眼 timer 进行到第几步,见 BLINK_SEQ
 
 static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
 
@@ -478,9 +485,26 @@ static void continue_challenge(void) {
     show_category();
 }
 
-static const lv_image_dsc_t *const LOGO_FRAMES[5] = {
-    &ruw_logo_r0, &ruw_logo_r5, &ruw_logo_r10, &ruw_logo_r15, &ruw_logo_blink,
+static const lv_image_dsc_t *const LOGO_FRAMES[RUW_LOGO_FRAMES] = {
+    &ruw_logo_f0, &ruw_logo_f1, &ruw_logo_f2, &ruw_logo_f3, &ruw_logo_f4, &ruw_logo_f5,
+    &ruw_logo_f6, &ruw_logo_f7, &ruw_logo_f8, &ruw_logo_f9, &ruw_logo_f10, &ruw_logo_f11,
 };
+
+// Logo 72x96。首页最终位置与开机动画起点(屏幕正中)。
+#define LOGO_W        72
+#define LOGO_H        96
+#define LOGO_X        84
+#define LOGO_Y        8
+#define LOGO_INTRO_Y  112
+#define TITLE_Y       104
+#define TITLE_INTRO_Y 212
+#define SUB_Y         150
+
+// 开机动画时间线(ms):12 帧播完后 SamL 淡入,再一起上移,最后其余元素淡入。
+#define INTRO_TITLE_FADE_AT  1100
+#define INTRO_MOVE_AT        1400
+#define INTRO_REST_FADE_AT   1750
+#define INTRO_END_AT         2100
 
 // 位移动画回调:把 anim 值写到对象 y。
 static void anim_y_cb(void *var, int32_t v) { lv_obj_set_y(var, v); }
@@ -489,12 +513,12 @@ static void anim_opa_cb(void *var, int32_t v) {
     lv_obj_set_style_opa(var, v, 0);
 }
 
-// 首页最终版面:Logo(76,14)、SamL 居中 y=102、副标题 y=148、菜单 y=180。
+// 首页最终版面:Logo(84,8)、SamL 居中 y=104、副标题 y=150、菜单 y=180。
 static void home_finish_layout(void) {
-    lv_image_set_src(s_home_logo, &ruw_logo_r15);
-    lv_obj_set_pos(s_home_logo, 76, 14);
-    lv_obj_set_y(s_home_title, 102);
-    lv_obj_set_y(s_home_sub, 148);
+    lv_image_set_src(s_home_logo, LOGO_FRAMES[RUW_LOGO_REST]);
+    lv_obj_set_pos(s_home_logo, LOGO_X, LOGO_Y);
+    lv_obj_set_y(s_home_title, TITLE_Y);
+    lv_obj_set_y(s_home_sub, SUB_Y);
     lv_obj_set_style_opa(s_home_title, LV_OPA_COVER, 0);
     lv_obj_set_style_opa(s_home_sub, LV_OPA_COVER, 0);
     for (uint8_t i = 0; i < s_row_count; i++) {
@@ -504,27 +528,32 @@ static void home_finish_layout(void) {
     if (s_battery) lv_obj_set_style_opa(s_battery, LV_OPA_COVER, 0);
 }
 
-// 眨眼 timer:显示 120ms 闭眼帧,再回静止帧,5-8 秒后再来一次。
+// 眨眼:半闭 → 闭 → 半闭 → 睁开,每步停留时长见 BLINK_MS;做完等 5-8 秒再来。
+static const uint8_t BLINK_SEQ[] = {
+    RUW_LOGO_HALF_BLINK, RUW_LOGO_BLINK, RUW_LOGO_HALF_BLINK, RUW_LOGO_REST,
+};
+static const uint16_t BLINK_MS[] = { 60, 110, 60 };
+#define BLINK_STEPS (sizeof(BLINK_SEQ) / sizeof(BLINK_SEQ[0]))
+
 static void blink_timer_cb(lv_timer_t *t) {
     if (s_screen_off) { lv_timer_set_period(t, 1000); return; }
-    if (!s_blink_on) {
-        lv_image_set_src(s_home_logo, &ruw_logo_blink);
-        s_blink_on = true;
-        lv_timer_set_period(t, 120);
+    lv_image_set_src(s_home_logo, LOGO_FRAMES[BLINK_SEQ[s_blink_step]]);
+    if (s_blink_step + 1 < BLINK_STEPS) {
+        lv_timer_set_period(t, BLINK_MS[s_blink_step]);
+        s_blink_step++;
     } else {
-        lv_image_set_src(s_home_logo, &ruw_logo_r15);
-        s_blink_on = false;
+        s_blink_step = 0;
         lv_timer_set_period(t, 5000 + esp_random() % 3001);
     }
 }
 
 static void home_blink_start(void) {
     if (s_blink_timer) lv_timer_delete(s_blink_timer);
-    s_blink_on = false;
+    s_blink_step = 0;
     s_blink_timer = lv_timer_create(blink_timer_cb, 300, NULL);  // 进门 300ms 先眨一次
 }
 
-// 开机动画 timer:按纯时间线切 Logo 帧,到 1900ms 收尾。
+// 开机动画 timer:按纯时间线切 Logo 帧,到 INTRO_END_AT 收尾。
 static void intro_timer_cb(lv_timer_t *t) {
     uint32_t ms = (uint32_t)(now_ms() - s_intro_start_ms);
     uint8_t f = ruw_intro_frame_at(ms);
@@ -532,7 +561,7 @@ static void intro_timer_cb(lv_timer_t *t) {
         s_intro_frame = f;
         lv_image_set_src(s_home_logo, LOGO_FRAMES[f]);
     }
-    if (ms >= 1900) {
+    if (ms >= INTRO_END_AT) {
         lv_timer_delete(t);
         s_intro_timer = NULL;
         home_finish_layout();
@@ -544,10 +573,10 @@ static void intro_timer_cb(lv_timer_t *t) {
 // 开机第一次进首页:播放开机动画。
 static void home_play_intro(lv_obj_t *scr) {
     (void)scr;
-    // 只显示 Logo 在屏幕正中 (76,116),其余元素透明。
-    lv_image_set_src(s_home_logo, &ruw_logo_r0);
-    lv_obj_set_pos(s_home_logo, 76, 116);
-    lv_obj_set_y(s_home_title, 212);
+    // 只显示 Logo 在屏幕正中,其余元素透明。
+    lv_image_set_src(s_home_logo, LOGO_FRAMES[0]);
+    lv_obj_set_pos(s_home_logo, LOGO_X, LOGO_INTRO_Y);
+    lv_obj_set_y(s_home_title, TITLE_INTRO_Y);
     lv_obj_set_style_opa(s_home_title, LV_OPA_TRANSP, 0);
     lv_obj_set_style_opa(s_home_sub, LV_OPA_TRANSP, 0);
     for (uint8_t i = 0; i < s_row_count; i++) {
@@ -556,36 +585,36 @@ static void home_play_intro(lv_obj_t *scr) {
     }
     if (s_battery) lv_obj_set_style_opa(s_battery, LV_OPA_TRANSP, 0);
 
-    // SamL 在 Logo 下方 y=212,700-1000ms 淡入。
+    // 12 帧播完后,SamL 在 Logo 下方淡入。
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, s_home_title);
     lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
-    lv_anim_set_time(&a, 300);
-    lv_anim_set_delay(&a, 700);
+    lv_anim_set_time(&a, INTRO_MOVE_AT - INTRO_TITLE_FADE_AT - 50);
+    lv_anim_set_delay(&a, INTRO_TITLE_FADE_AT);
     lv_anim_set_exec_cb(&a, anim_opa_cb);
     lv_anim_start(&a);
 
-    // 1100-1500ms:Logo 与 SamL 一起上移到最终位置,ease_out。
+    // Logo 与 SamL 一起上移到最终位置,ease_out。
     lv_anim_init(&a);
     lv_anim_set_var(&a, s_home_logo);
-    lv_anim_set_values(&a, 116, 14);
-    lv_anim_set_time(&a, 400);
-    lv_anim_set_delay(&a, 1100);
+    lv_anim_set_values(&a, LOGO_INTRO_Y, LOGO_Y);
+    lv_anim_set_time(&a, INTRO_REST_FADE_AT - INTRO_MOVE_AT);
+    lv_anim_set_delay(&a, INTRO_MOVE_AT);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, anim_y_cb);
     lv_anim_start(&a);
 
     lv_anim_init(&a);
     lv_anim_set_var(&a, s_home_title);
-    lv_anim_set_values(&a, 212, 102);
-    lv_anim_set_time(&a, 400);
-    lv_anim_set_delay(&a, 1100);
+    lv_anim_set_values(&a, TITLE_INTRO_Y, TITLE_Y);
+    lv_anim_set_time(&a, INTRO_REST_FADE_AT - INTRO_MOVE_AT);
+    lv_anim_set_delay(&a, INTRO_MOVE_AT);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, anim_y_cb);
     lv_anim_start(&a);
 
-    // 1500-1900ms:副标题、菜单、电量淡入。
+    // 最后:副标题、菜单、电量淡入。
     lv_obj_t *fade_objs[8];
     fade_objs[0] = s_home_sub;
     uint8_t n = 1;
@@ -598,8 +627,8 @@ static void home_play_intro(lv_obj_t *scr) {
         lv_anim_init(&a);
         lv_anim_set_var(&a, fade_objs[i]);
         lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
-        lv_anim_set_time(&a, 400);
-        lv_anim_set_delay(&a, 1500);
+        lv_anim_set_time(&a, INTRO_END_AT - INTRO_REST_FADE_AT);
+        lv_anim_set_delay(&a, INTRO_REST_FADE_AT);
         lv_anim_set_exec_cb(&a, anim_opa_cb);
         lv_anim_start(&a);
     }
@@ -613,16 +642,16 @@ static void show_home(void) {
     lv_obj_t *scr = page_begin(PAGE_HOME);
 
     s_home_logo = lv_image_create(scr);
-    lv_obj_set_size(s_home_logo, 88, 88);
+    lv_obj_set_size(s_home_logo, LOGO_W, LOGO_H);
 
     // 应用名「SamL」ruw_font_36 水平居中。
     s_home_title = label(scr, &ruw_font_36, COL_INK, "SamL");
-    lv_obj_align(s_home_title, LV_ALIGN_TOP_MID, 0, 102);
+    lv_obj_align(s_home_title, LV_ALIGN_TOP_MID, 0, TITLE_Y);
 
     s_home_sub = label(scr, &ruw_font_20, COL_MUTED, "");
     lv_label_set_text_fmt(s_home_sub, "俄语单词斩 · %u/%u",
                           ruw_count_mastered(&s_progress), RUW_WORD_COUNT);
-    lv_obj_align(s_home_sub, LV_ALIGN_TOP_MID, 0, 148);
+    lv_obj_align(s_home_sub, LV_ALIGN_TOP_MID, 0, SUB_Y);
 
     // 3 行菜单:首行 y=180,行距 42,行高 36。
     for (int r = 0; r < HOME_VISIBLE; r++) list_row(scr, 180 + r * 42, 36, "", true);
