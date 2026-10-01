@@ -39,3 +39,12 @@
 - 与当前 BSP 音频路径匹配时优先采用 16 kHz、16 位单声道 PCM。
 - 嵌入音频前评估 Flash 与内部 RAM 成本；长录音应流式或分块。
 - 无再分发许可不提交媒体文件。
+
+## 俄语单词斩（feature/russian-words）
+
+| 路径 | 说明 |
+| --- | --- |
+| `fonts/ruw_font_20.c` / `ruw_font_28.c` / `ruw_font_36.c` | Noto Sans SC（SIL OFL 1.1）经 lv_font_conv 1.5.2 转换，4 bpp 未压缩。20px 覆盖 `tools/ruwords/glyphs.txt` 全部字符，28/36px 仅 ASCII 与西里尔字母。再生成：`tools/ruwords/gen_fonts.sh <字体路径>` |
+| `music/ruwords_voice.adpcm` | 301 个单词的俄语读音，macOS `say -v Milena` 合成，ffmpeg 去首尾静音后转 16 kHz 单声道，再编码为 IMA-ADPCM 4 bit。再生成：`python3 tools/ruwords/gen_assets.py` |
+
+macOS 系统语音的合成结果仅供个人学习使用，未确认可公开再分发；公开发布前应换用许可明确的 TTS 或真人录音。

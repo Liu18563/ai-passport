@@ -41,3 +41,12 @@ Store reusable music and sound-effect sources in `music/`.
 - Prefer 16 kHz, 16-bit mono PCM when it matches the current BSP audio path.
 - Check Flash and internal-RAM cost before embedding audio; stream or chunk long recordings.
 - Do not commit media without redistribution permission.
+
+## Russian Words (feature/russian-words)
+
+| Path | Notes |
+| --- | --- |
+| `fonts/ruw_font_20.c` / `ruw_font_28.c` / `ruw_font_36.c` | Noto Sans SC (SIL OFL 1.1) converted with lv_font_conv 1.5.2, 4 bpp, uncompressed. 20px covers every character in `tools/ruwords/glyphs.txt`; 28/36px cover ASCII and Cyrillic only. Regenerate: `tools/ruwords/gen_fonts.sh <font path>` |
+| `music/ruwords_voice.adpcm` | Russian pronunciation for 301 words, synthesized with macOS `say -v Milena`, silence-trimmed with ffmpeg, resampled to 16 kHz mono and encoded as 4-bit IMA-ADPCM. Regenerate: `python3 tools/ruwords/gen_assets.py` |
+
+Output of the macOS system voice is for personal study only and has not been cleared for public redistribution; switch to a clearly licensed TTS or human recordings before publishing.
