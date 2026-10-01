@@ -281,6 +281,7 @@ static void progress_load(void) {
             s_last_seen[WLVER_FIXED_IDX] = 0;
             s_gender_stage[WLVER_FIXED_IDX] = RUW_STAGE_NEW;
             s_gender_seen[WLVER_FIXED_IDX] = 0;
+            progress_save();  // 先把清零后的进度落盘,再记 wlver,否则断电会留下旧状态
             if (nvs_open(NVS_NS, NVS_READWRITE, &hw) == ESP_OK) {
                 nvs_set_u16(hw, NVS_WLVER_KEY, WLVER_CURRENT);
                 nvs_commit(hw);
