@@ -143,6 +143,16 @@ void ruw_session_finish(ruw_progress_t *p) {
     if (p->level < UINT16_MAX) p->level++;
 }
 
+bool ruw_session_valid(const ruw_session_t *s, uint16_t word_count) {
+    if (s->len > RUW_SESSION_CAP) return false;
+    if (s->pos > s->len) return false;
+    for (uint8_t i = 0; i < s->len; i++) {
+        if (s->queue[i] >= word_count) return false;
+        if (s->requeued[i] > 1) return false;
+    }
+    return true;
+}
+
 static uint32_t next_rand(uint32_t *seed) {
     uint32_t x = *seed ? *seed : 0x9E3779B9u;
     x ^= x << 13;

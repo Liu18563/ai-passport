@@ -338,6 +338,55 @@ static void test_category_stats(void) {
     assert(all.nouns_mastered == c0.nouns_mastered + c1.nouns_mastered + c2.nouns_mastered);
 }
 
+// 断点校验:正常通过;len 超上限、pos>len、下标越界、requeued 非法各一例不通过。
+static void test_session_valid(void) {
+    ruw_progress_t p = make_progress();
+    uint8_t elig[N] = {0};
+    for (int i = 0; i < 12; i++) elig[i] = 1;
+    ruw_session_t s;
+    assert(ruw_session_build(&s, &p, elig) > 0);
+    assert(ruw_session_valid(&s, N));  // 正常通过
+
+    ruw_session_t bad;
+    bad = s; bad.len = RUW_SESSION_CAP + 1; assert(!ruw_session_valid(&bad, N));
+    bad = s; bad.pos = s.len + 1;           assert(!ruw_session_valid(&bad, N));
+    bad = s; bad.queue[0] = N;              assert(!ruw_session_valid(&bad, N));
+    bad = s; bad.requeued[0] = 2;           assert(!ruw_session_valid(&bad, N));
+    // 全零空关也算合法(可恢复,只是没题)。
+    ruw_session_t empty; memset(&empty, 0, sizeof(empty));
+    assert(ruw_session_valid(&empty, N));
+}
+
+// 答到一半把 session 复制一份再继续答完,结果与不复制完全一样(快照能原样恢复)。
+static void test_session_snapshot_restores(void) {
+    ruw_progress_t p1 = make_progress(), p2 = make_progress();
+    uint8_t elig[N] = {0};
+    for (int i = 0; i < 12; i++) elig[i] = 1;
+
+    // 线路 A:从头答到尾。
+    ruw_session_t a;
+    ruw_session_build(&a, &p1, elig);
+    while (ruw_session_answer(&a, &p1, true)) {}
+
+    // 线路 B:答一半快照,恢复后答完。
+    ruw_session_t b;
+    ruw_session_build(&b, &p2, elig);
+    for (int k = 0; k < 5; k++) ruw_session_answer(&b, &p2, true);
+    ruw_session_t snap = b;  // 复制一份
+    ruw_progress_t snap_progress = p2;
+    while (ruw_session_answer(&b, &p2, true)) {}
+
+    // 用快照恢复,继续答完应得到同样的最终状态。
+    ruw_session_t r = snap;
+    ruw_progress_t rp = snap_progress;
+    while (ruw_session_answer(&r, &rp, true)) {}
+
+    assert(rp.level == p2.level);
+    assert(!memcmp(rp.stage, p2.stage, N));
+    assert(!memcmp(rp.last_seen, p2.last_seen, N * sizeof(uint16_t)));
+    assert(r.correct == b.correct && r.wrong == b.wrong && r.len == b.len && r.pos == b.pos);
+}
+
 int main(void) {
     test_stage_transitions();
     test_requeued_keeps_stage();
@@ -358,5 +407,7 @@ int main(void) {
     test_question_large_scale();
     test_adpcm_decode();
     test_category_stats();
+    test_session_valid();
+    test_session_snapshot_restores();
     return 0;
 }

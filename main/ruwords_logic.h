@@ -85,6 +85,10 @@ bool ruw_session_answer(ruw_session_t *s, ruw_progress_t *p, bool correct);
 // 一关打完:关数 +1。
 void ruw_session_finish(ruw_progress_t *p);
 
+// 断点校验:len≤CAP、pos≤len、queue[0..len) 下标都 < word_count、requeued 只能 0/1。
+// 任一不满足返回 false,调用方当作无记录,不要崩溃。
+bool ruw_session_valid(const ruw_session_t *s, uint16_t word_count);
+
 // 生成四选一。category 为每个词的分类数组;优先选同类干扰项。
 // seed 由调用方提供(xorshift),同一 seed 结果确定,便于测试。
 void ruw_question_make(ruw_question_t *q, uint16_t target, uint16_t count,
