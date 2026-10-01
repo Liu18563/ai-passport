@@ -37,6 +37,7 @@ static const char *TAG = "ruwords";
 LV_FONT_DECLARE(ruw_font_20);
 LV_FONT_DECLARE(ruw_font_28);
 LV_FONT_DECLARE(ruw_font_36);
+LV_FONT_DECLARE(ruw_font_48);
 
 extern const uint8_t s_voice_start[] asm("_binary_ruwords_voice_adpcm_start");
 extern const uint8_t s_voice_end[] asm("_binary_ruwords_voice_adpcm_end");
@@ -61,11 +62,14 @@ static const uint8_t VOLUME_STEPS[] = { 60, 70, 80, 90, 100 };
 #define VOLUME_DEFAULT (VOLUME_LEVELS - 1)
 
 // ---- 状态 ----
-typedef enum { PAGE_HOME, PAGE_CATEGORY, PAGE_QUIZ, PAGE_DONE } page_t;
+typedef enum { PAGE_HOME, PAGE_CATEGORY, PAGE_QUIZ, PAGE_DONE, PAGE_SETTINGS } page_t;
 typedef enum {
-    MENU_START, MENU_LISTEN, MENU_GENDER, MENU_WRONG, MENU_CATEGORY, MENU_VOLUME,
+    MENU_START, MENU_LISTEN, MENU_GENDER, MENU_WRONG,
     MENU_COUNT,
 } menu_t;
+typedef enum {
+    SET_CATEGORY, SET_VOLUME, SET_RESET, SET_COUNT,
+} settings_t;
 typedef enum { MODE_STUDY, MODE_WRONG, MODE_LISTEN, MODE_GENDER } study_mode_t;
 
 typedef struct {
@@ -98,6 +102,8 @@ static study_mode_t s_mode;
 
 static page_t s_page;
 static uint8_t s_menu;
+static uint8_t s_settings_cursor;
+static uint8_t s_reset_confirm;  // 重置进度第一次确定后置 1
 static uint8_t s_cat_cursor;
 static uint8_t s_selected;
 static bool s_answered;
@@ -350,11 +356,6 @@ static void home_menu_text(void) {
                           ruw_count_mastered(&s_gender_progress));
     lv_label_set_text_fmt(s_row_labels[MENU_WRONG], "错题本 · %u 个",
                           ruw_count_wrong(&s_progress));
-    lv_label_set_text_fmt(s_row_labels[MENU_CATEGORY], "选择分类：%s", filter_name());
-    static const char *const BARS[VOLUME_LEVELS] = {
-        "●○○○○", "●●○○○", "●●●○○", "●●●●○", "●●●●●",
-    };
-    lv_label_set_text_fmt(s_row_labels[MENU_VOLUME], "音量  %s", BARS[s_volume_level]);
 }
 
 static void show_home(void) {
@@ -365,31 +366,80 @@ static void show_home(void) {
     lv_obj_set_pos(title, 42, 10);
 
     uint16_t mastered = ruw_count_mastered(&s_progress);
-    lv_obj_t *card = box(scr, 16, 44, 208, 86, COL_CARD, 16);
-    lv_obj_t *big = label(card, &ruw_font_36, COL_INK, "");
-    lv_label_set_text_fmt(big, "%u", mastered);
-    lv_obj_set_pos(big, 16, 4);
-    lv_obj_t *sub = label(card, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(sub, "/ %d 已掌握", RUW_WORD_COUNT);
-    lv_obj_align_to(sub, big, LV_ALIGN_OUT_RIGHT_BOTTOM, 6, -6);
 
-    lv_obj_t *bar = lv_bar_create(card);
-    lv_obj_set_size(bar, 176, 6);
-    lv_obj_set_pos(bar, 16, 54);
-    lv_bar_set_range(bar, 0, RUW_WORD_COUNT);
-    lv_bar_set_value(bar, mastered, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(COL_BG), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
+    // 进度环(直径约118),环心大号数字=已掌握数,数字下方小字"/ 总词数"。
+    lv_obj_t *arc = lv_arc_create(scr);
+    lv_obj_set_size(arc, 118, 118);
+    lv_obj_set_pos(arc, 61, 30);
+    lv_arc_set_bg_angles(arc, 0, 360);
+    lv_arc_set_range(arc, 0, RUW_WORD_COUNT);
+    lv_arc_set_value(arc, mastered);
+    lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(arc, 6, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(COL_CARD), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(COL_ACCENT), LV_PART_INDICATOR);
+    // 进度环不需要旋钮:把 KNOB 部分设为透明。
+    lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(arc, 0, LV_PART_KNOB);
 
-    lv_obj_t *stats = label(card, &ruw_font_20, COL_MUTED, "");
-    lv_label_set_text_fmt(stats, "新词 %u · 错词 %u", ruw_count_new(&s_progress),
+    lv_obj_t *num = label(scr, &ruw_font_48, COL_INK, "");
+    lv_label_set_text_fmt(num, "%u", mastered);
+    lv_obj_align_to(num, arc, LV_ALIGN_CENTER, 0, -16);
+    lv_obj_t *total = label(scr, &ruw_font_20, COL_MUTED, "");
+    lv_label_set_text_fmt(total, "/%d", RUW_WORD_COUNT);
+    lv_obj_align_to(total, arc, LV_ALIGN_CENTER, 0, 26);
+
+    // 环下一行:第 N 关 · 新词 x · 错词 y。
+    lv_obj_t *stats = label(scr, &ruw_font_20, COL_MUTED, "");
+    lv_label_set_text_fmt(stats, "第 %u 关 · 新词 %u · 错词 %u",
+                          s_progress.level + 1, ruw_count_new(&s_progress),
                           ruw_count_wrong(&s_progress));
-    lv_obj_set_pos(stats, 16, 60);
+    lv_obj_align(stats, LV_ALIGN_TOP_MID, 0, 150);
 
-    // 6 个菜单项压缩排布:首行 y=132,行距 30,行高 28,末行底边 310。
-    for (int i = 0; i < MENU_COUNT; i++) list_row(scr, 132 + i * 30, 28, "", true);
+    // 菜单 4 行:行距 30,行高 28,末行底边 294。
+    for (int i = 0; i < MENU_COUNT; i++) list_row(scr, 176 + i * 30, 28, "", true);
     home_menu_text();
     list_select(s_menu);
+
+    // 底部小字:长按确定进入设置。
+    lv_obj_t *hint = label(scr, &ruw_font_20, COL_MUTED, "长按确定：设置");
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 298);
+}
+
+// ---------------------------------------------------------------- 设置页
+
+static void settings_text(void) {
+    lv_label_set_text_fmt(s_row_labels[SET_CATEGORY], "选择分类：%s", filter_name());
+    static const char *const BARS[VOLUME_LEVELS] = {
+        "●○○○○", "●●○○○", "●●●○○", "●●●●○", "●●●●●",
+    };
+    lv_label_set_text_fmt(s_row_labels[SET_VOLUME], "音量  %s", BARS[s_volume_level]);
+    lv_label_set_text(s_row_labels[SET_RESET],
+                      s_reset_confirm ? "再按一次确认重置" : "重置进度");
+}
+
+static void show_settings(void) {
+    s_reset_confirm = 0;
+    lv_obj_t *scr = page_begin(PAGE_SETTINGS);
+
+    lv_obj_t *title = label(scr, &ruw_font_20, COL_INK, "设置");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
+
+    for (int i = 0; i < SET_COUNT; i++) list_row(scr, 76 + i * 52, 44, "", true);
+    settings_text();
+    list_select(s_settings_cursor);
+
+    lv_obj_t *hint = label(scr, &ruw_font_20, COL_MUTED, "长按确定：返回");
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 250);
+}
+
+// 重置全部进度(词义与性别),回到初始状态并重绘首页。
+static void reset_progress(void) {
+    ruw_progress_reset(&s_progress);
+    ruw_progress_reset(&s_gender_progress);
+    progress_save();
+    show_home();
 }
 
 // ---------------------------------------------------------------- 分类
@@ -443,43 +493,52 @@ static uint16_t current_word(void) {
     return s_session.queue[s_answered ? s_session.pos - 1 : s_session.pos];
 }
 
-// 俄语单词块:重读元音标红(ru_marked + recolor)+ 拉丁转写。
-// 看词模式在出题页就画;听音模式作答前不画,作答后才揭晓。
-static void create_ru_block(lv_obj_t *scr, const ruw_word_t *w) {
-    bool long_word = utf8_len(w->ru) > 8;
-    lv_obj_t *ru = label(scr, long_word ? &ruw_font_28 : &ruw_font_36, COL_INK, "");
-    lv_label_set_recolor(ru, true);
-    lv_label_set_text(ru, w->ru_marked);
-    lv_obj_set_width(ru, 216);
-    lv_label_set_long_mode(ru, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(ru, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ru, LV_ALIGN_TOP_MID, 0, long_word ? 70 : 66);
-
-    lv_obj_t *tr = label(scr, &ruw_font_20, COL_MUTED, w->translit);
-    lv_obj_align(tr, LV_ALIGN_TOP_MID, 0, long_word ? 106 : 112);
-}
-
-// 阴阳中性题面:白色大卡片,名词(重音标红)+ 转写 + 一行中文小字,右上角小标签。
-static void create_gender_block(lv_obj_t *scr, const ruw_word_t *w, const char *tag) {
-    bool long_word = utf8_len(w->ru) > 8;
-    lv_obj_t *card = box(scr, 16, 44, 208, 108, COL_CARD, 14);
-
+// 统一的白色题面大卡片:右上角小标签(新词/错词/再考一次)。
+static lv_obj_t *create_question_card(lv_obj_t *scr, const char *tag) {
+    lv_obj_t *card = box(scr, 16, 44, 208, 104, COL_CARD, 14);
     lv_obj_t *chip = label(card, &ruw_font_20, COL_ACCENT, tag);
     lv_obj_align(chip, LV_ALIGN_TOP_RIGHT, -8, 6);
+    return card;
+}
 
+// 俄语单词块(放进卡片):重读元音标红 + 拉丁转写。
+static void create_ru_block(lv_obj_t *card, const ruw_word_t *w) {
+    bool long_word = utf8_len(w->ru) > 8;
     lv_obj_t *ru = label(card, long_word ? &ruw_font_28 : &ruw_font_36, COL_INK, "");
     lv_label_set_recolor(ru, true);
     lv_label_set_text(ru, w->ru_marked);
-    lv_obj_set_width(ru, 190);
+    lv_obj_set_width(ru, 188);
     lv_label_set_long_mode(ru, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(ru, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ru, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(ru, LV_ALIGN_TOP_MID, 0, long_word ? 18 : 16);
 
     lv_obj_t *tr = label(card, &ruw_font_20, COL_MUTED, w->translit);
-    lv_obj_align(tr, LV_ALIGN_TOP_MID, 0, 56);
+    lv_obj_align(tr, LV_ALIGN_TOP_MID, 0, long_word ? 60 : 66);
+}
+
+// 阴阳中性题面(放进卡片):名词(重音标红)+ 转写 + 一行中文小字。
+// 8 字符及以上用 28px,避免词尾贴近右上角标签。
+static void create_gender_block(lv_obj_t *card, const ruw_word_t *w) {
+    bool long_word = utf8_len(w->ru) >= 8;
+    lv_obj_t *ru = label(card, long_word ? &ruw_font_28 : &ruw_font_36, COL_INK, "");
+    lv_label_set_recolor(ru, true);
+    lv_label_set_text(ru, w->ru_marked);
+    lv_obj_set_width(ru, 188);
+    lv_label_set_long_mode(ru, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(ru, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(ru, LV_ALIGN_TOP_MID, 0, 6);
+
+    lv_obj_t *tr = label(card, &ruw_font_20, COL_MUTED, w->translit);
+    lv_obj_align(tr, LV_ALIGN_TOP_MID, 0, 54);
 
     lv_obj_t *zh = label(card, &ruw_font_20, COL_MUTED, w->zh);
-    lv_obj_align(zh, LV_ALIGN_TOP_MID, 0, 82);
+    lv_obj_align(zh, LV_ALIGN_TOP_MID, 0, 80);
+}
+
+// 听音模式题面:48px 大"听"。
+static void create_listen_block(lv_obj_t *card) {
+    lv_obj_t *hear = label(card, &ruw_font_48, COL_ACCENT, "听");
+    lv_obj_center(hear);
 }
 
 static void show_question(void) {
@@ -515,19 +574,15 @@ static void show_question(void) {
     const char *tag = s_session.requeued[s_session.pos] ? "再考一次"
                     : (tag_stage == RUW_STAGE_NEW ? "新词" : "错词");
 
+    lv_obj_t *card = create_question_card(scr, tag);
     if (gender_mode) {
-        create_gender_block(scr, w, tag);
+        create_gender_block(card, w);
     } else if (s_mode == MODE_LISTEN) {
-        // 听音模式:作答前不露俄语/转写,只放一个大"听"提示区。
-        lv_obj_t *chip = label(scr, &ruw_font_20, COL_ACCENT, tag);
-        lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 44);
-        s_hear_prompt = box(scr, 16, 62, 208, 60, COL_CARD, 14);
-        lv_obj_t *hear = label(s_hear_prompt, &ruw_font_20, COL_ACCENT, "听");
-        lv_obj_center(hear);
+        // 听音模式:作答前不露俄语/转写,只放一个大"听"。
+        s_hear_prompt = card;
+        create_listen_block(card);
     } else {
-        lv_obj_t *chip = label(scr, &ruw_font_20, COL_ACCENT, tag);
-        lv_obj_align(chip, LV_ALIGN_TOP_MID, 0, 44);
-        create_ru_block(scr, w);
+        create_ru_block(card, w);
     }
 
     static const char *const GENDER_OPT[RUW_OPTIONS] = {
@@ -536,11 +591,12 @@ static void show_question(void) {
     for (int i = 0; i < RUW_OPTIONS; i++) {
         const char *text = gender_mode ? GENDER_OPT[i]
                            : RUW_WORDS[s_question.word[i]].zh;
-        list_row(scr, 158 + i * 33, 30, text, false);
+        list_row(scr, 154 + i * 33, 30, text, false);
     }
+    // 施工单原文案在 240 宽屏一行放不下,精简为同等信息的「▲▼选择 ●确定 长按重听」。
     s_hint = label(scr, &ruw_font_20, COL_MUTED,
-                   gender_mode ? "▲▼ 选择 · ● 确定" : "长按↑重听");
-    lv_obj_align(s_hint, LV_ALIGN_TOP_MID, 0, 294);
+                   "▲▼选择 ●确定 长按重听");
+    lv_obj_align(s_hint, LV_ALIGN_TOP_MID, 0, 288);
     quiz_rows_refresh();
     play_word(target);
 }
@@ -553,7 +609,7 @@ static void show_answer_detail(bool ok) {
     const ruw_word_t *w = &RUW_WORDS[target];
     for (int i = 0; i < s_row_count; i++) lv_obj_add_flag(s_rows[i], LV_OBJ_FLAG_HIDDEN);
 
-    lv_obj_t *card = box(s_scr, 16, 138, 208, 150, ok ? COL_OK_BG : COL_BAD_BG, 14);
+    lv_obj_t *card = box(s_scr, 16, 152, 208, 130, ok ? COL_OK_BG : COL_BAD_BG, 14);
     lv_obj_t *verdict = label(card, &ruw_font_20, ok ? COL_OK : COL_ACCENT,
                               ok ? "答对了！" : "答错了，已加入错题本");
     lv_obj_set_pos(verdict, 12, 8);
@@ -586,7 +642,7 @@ static void show_answer_detail(bool ok) {
                                   RUW_WORDS[s_question.word[s_selected]].zh);
         lv_label_set_long_mode(mine, LV_LABEL_LONG_DOT);
         lv_obj_set_width(mine, 184);
-        lv_obj_set_pos(mine, 12, 118);
+        lv_obj_set_pos(mine, 12, 100);
     }
 }
 
@@ -601,14 +657,13 @@ static void submit_answer(void) {
     ruw_session_answer(&s_session, prog, ok);
     progress_save();  // 随时关机也不丢进度
 
-    // 听音模式:作答后把大"听"换成俄语单词(重音标红)+转写。
+    // 听音模式:作答后清空卡片,把大"听"换成俄语(重音标红)+转写。
     if (s_mode == MODE_LISTEN) {
-        lv_obj_delete(s_hear_prompt);
-        s_hear_prompt = NULL;
-        create_ru_block(s_scr, &RUW_WORDS[target]);
+        lv_obj_clean(s_hear_prompt);
+        create_ru_block(s_hear_prompt, &RUW_WORDS[target]);
     }
 
-    lv_label_set_text(s_hint, "↑↓重听 · 确定下一题");
+    lv_label_set_text(s_hint, "▲▼ 重听 · ● 下一题");
     show_answer_detail(ok);
     play_word(target);
 }
@@ -668,6 +723,11 @@ static bool start_session(study_mode_t mode) {
 // ---------------------------------------------------------------- 输入
 
 static void home_input(const input_event_t *in) {
+    // 长按确定进入设置页。
+    if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
+        show_settings();
+        return;
+    }
     if (in->ev != BSP_BTN_CLICK) return;
     if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
         s_menu = (uint8_t)((s_menu + (in->btn == BSP_BTN_UP ? MENU_COUNT - 1 : 1)) % MENU_COUNT);
@@ -676,30 +736,62 @@ static void home_input(const input_event_t *in) {
     }
     switch (s_menu) {
     case MENU_START:
-        start_session(MODE_STUDY);
+        if (!start_session(MODE_STUDY)) {
+            lv_label_set_text(s_row_labels[MENU_START], "全部掌握 · 已通关");
+        }
         break;
     case MENU_LISTEN:
-        start_session(MODE_LISTEN);
+        if (!start_session(MODE_LISTEN)) {
+            lv_label_set_text(s_row_labels[MENU_LISTEN], "全部掌握 · 已通关");
+        }
         break;
     case MENU_GENDER:
         if (!start_session(MODE_GENDER)) {
             lv_label_set_text(s_row_labels[MENU_GENDER], "阴阳中性已通关");
         }
         break;
-    case MENU_CATEGORY:
-        show_category();
-        break;
     case MENU_WRONG:
         if (!start_session(MODE_WRONG)) {
             lv_label_set_text(s_row_labels[MENU_WRONG], "错题本是空的");
         }
         break;
-    case MENU_VOLUME:
+    }
+}
+
+// 设置页输入:上下移动;确定执行;长按确定返回首页。
+static void settings_input(const input_event_t *in) {
+    if (in->btn == BSP_BTN_OK && in->ev == BSP_BTN_LONG) {
+        show_home();
+        return;
+    }
+    if (in->ev != BSP_BTN_CLICK) return;
+    if (in->btn == BSP_BTN_UP || in->btn == BSP_BTN_DOWN) {
+        s_settings_cursor = (uint8_t)((s_settings_cursor +
+            (in->btn == BSP_BTN_UP ? SET_COUNT - 1 : 1)) % SET_COUNT);
+        s_reset_confirm = 0;  // 移开后取消重置确认
+        settings_text();
+        list_select(s_settings_cursor);
+        return;
+    }
+    switch (s_settings_cursor) {
+    case SET_CATEGORY:
+        show_category();  // 分类页返回时回首页
+        break;
+    case SET_VOLUME:
         s_volume_level = (uint8_t)((s_volume_level + 1) % VOLUME_LEVELS);
         apply_volume();
-        home_menu_text();
+        settings_text();
         progress_save();
         play_word(0);  // 试听
+        break;
+    case SET_RESET:
+        // 连按两次确定才执行:第一次只改文字。
+        if (!s_reset_confirm) {
+            s_reset_confirm = 1;
+            settings_text();
+        } else {
+            reset_progress();
+        }
         break;
     }
 }
@@ -749,6 +841,7 @@ static void quiz_input(const input_event_t *in) {
 static void handle_input(const input_event_t *in) {
     switch (s_page) {
     case PAGE_HOME:     home_input(in); break;
+    case PAGE_SETTINGS: settings_input(in); break;
     case PAGE_CATEGORY: category_input(in); break;
     case PAGE_QUIZ:     quiz_input(in); break;
     case PAGE_DONE:

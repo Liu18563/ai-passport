@@ -10,3 +10,5 @@ common=(--bpp 4 --format lvgl --no-compress --lv-include lvgl.h)
 lv_font_conv --font "$font" --symbols "$(cat tools/ruwords/glyphs.txt)" --size 20 "${common[@]}" -o assets/fonts/ruw_font_20.c
 lv_font_conv --font "$font" --range "$cyr" --size 28 "${common[@]}" -o assets/fonts/ruw_font_28.c
 lv_font_conv --font "$font" --range "$cyr" --size 36 "${common[@]}" -o assets/fonts/ruw_font_36.c
+# 48px 只收大号"听"、"全部掌握"、数字与"/"。
+lv_font_conv --font "$font" --symbols "听全部掌握0123456789/" --size 48 "${common[@]}" -o assets/fonts/ruw_font_48.c
